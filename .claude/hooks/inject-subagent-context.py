@@ -28,9 +28,11 @@ warnings.filterwarnings("ignore")
 
 import json
 import os
+import queue
 import sys
+import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 # Hook hosts send UTF-8 JSON regardless of the process locale.
 _stdin_reconfigure = getattr(sys.stdin, "reconfigure", None)
@@ -91,11 +93,22 @@ def find_repo_root(start_path: str) -> str | None:
     return None
 
 
+def _is_antigravity_payload(input_data: dict) -> bool:
+    return (
+        isinstance(input_data.get("workspacePaths"), list)
+        or isinstance(input_data.get("artifactDirectoryPath"), str)
+        or isinstance(input_data.get("toolCall"), dict)
+        or input_data.get("hookEventName") in ("PreInvocation", "PostInvocation")
+    )
+
+
 def _detect_platform(input_data: dict) -> str | None:
     if _hook_event_name(input_data) == "SubagentStart":
         return "codex"
     if isinstance(input_data.get("cursor_version"), str):
         return "cursor"
+    if _is_antigravity_payload(input_data):
+        return "antigravity"
     # CLAUDE_PROJECT_DIR is a compatibility alias that several hosts set
     # alongside their own variable — CodeBuddy, ZCode and Trae all do. It must
     # therefore be checked LAST, or every one of them is detected as claude and
@@ -105,6 +118,7 @@ def _detect_platform(input_data: dict) -> str | None:
     # disk. Same fix as inject-workflow-state.py and session-start.py; this
     # third copy was missed when those two were corrected.
     env_map = {
+        "ANTIGRAVITY_PROJECT_DIR": "antigravity",
         "ZCODE_PROJECT_DIR": "zcode",
         "CURSOR_PROJECT_DIR": "cursor",
         "CODEBUDDY_PROJECT_DIR": "codebuddy",
@@ -121,6 +135,8 @@ def _detect_platform(input_data: dict) -> str | None:
         if os.environ.get(env_name):
             return platform
     script_parts = set(Path(sys.argv[0]).parts)
+    if ".agents" in script_parts or ".agent" in script_parts:
+        return "antigravity"
     if ".claude" in script_parts:
         return "claude"
     if ".cursor" in script_parts:
@@ -809,15 +825,35 @@ To get structured package info, run: `python3 ./{DIR_WORKFLOW}/scripts/get_conte
     return "\n\n".join(context_parts)
 
 
-def build_research_prompt(original_prompt: str, context: str) -> str:
-    """Build complete prompt for Research"""
+def build_research_prompt(
+    original_prompt: str, context: str, task_dir: str | None = None
+) -> str:
+    """Build the research prompt with task-scoped output instructions."""
+    if task_dir:
+        research_dir = f"{task_dir}/research"
+        write_scope = f"""**Allowed writes**: Create `{research_dir}/` if needed and write
+one markdown file per topic under `{research_dir}/*.md`.
+**Forbidden writes**: Any file outside `{research_dir}/`, including code,
+specs, platform configuration, and other task directories. Do not run git operations."""
+        report_delivery = f"""Persist the results to `{research_dir}/<topic-slug>.md`.
+Reply with only the written paths and a one-line summary per file, plus critical caveats.
+Do not paste the full research content into the reply."""
+    else:
+        write_scope = """**No active task directory**: Run `.trellis/scripts/task.py current --source`
+with the platform's Python command to resolve the task. If no task is active, ask the user where to write output.
+Do not guess a destination or write files until the output directory is resolved.
+Once resolved, write only topic markdown under that task's `research/` directory;
+all files outside it and git operations remain forbidden."""
+        report_delivery = """Resolve the output directory before persisting results.
+Then reply with written paths and one-line summaries, plus critical caveats,
+instead of the full research content."""
     return f"""# Research Agent Task
 
 You are the Research Agent in the Multi-Agent Pipeline (search researcher).
 
 ## Core Principle
 
-**You do one thing: find and explain information.**
+**You do one thing: find, explain, and persist information.**
 
 You are a documenter, not a reviewer.
 
@@ -838,7 +874,8 @@ You are a documenter, not a reviewer.
 1. **Understand query** - Determine search type (internal/external) and scope
 2. **Plan search** - List search steps for complex queries
 3. **Execute search** - Execute multiple independent searches in parallel
-4. **Organize results** - Output structured report
+4. **Persist results** - Write one markdown report per topic in the allowed output directory
+5. **Report** - Return written file paths and short summaries
 
 ## Search Tools
 
@@ -847,18 +884,20 @@ You are a documenter, not a reviewer.
 | Glob | Search by filename pattern |
 | Grep | Search by content |
 | Read | Read file content |
+| Write | Persist topic markdown in the allowed output directory |
 | mcp__exa__web_search_exa | External web search |
 | mcp__exa__get_code_context_exa | External code/doc search |
 
 ## Strict Boundaries
 
-**Only allowed**: Describe what exists, where it is, how it works
+**Only allowed**: Describe what exists, where it is, how it works, and persist those findings
+
+{write_scope}
 
 **Forbidden** (unless explicitly asked):
 - Suggest improvements
 - Criticize implementation
 - Recommend refactoring
-- Modify any files
 
 ## Report Format
 
@@ -866,7 +905,9 @@ Provide structured search results including:
 - List of files found (with paths)
 - Code pattern analysis (if applicable)
 - Related spec documents
-- External references (if any)"""
+- External references (if any)
+
+{report_delivery}"""
 
 
 def _string_value(value: Any) -> str:
@@ -1060,6 +1101,18 @@ def _parse_hook_input(input_data: dict) -> tuple[str, str, dict]:
     - Gemini CLI: tool_name IS the agent name (BeforeTool matcher already filtered)
     - Kiro: agentSpawn hook, agent_name field at top level
     """
+    # Antigravity (2.0 / IDE / CLI): PreToolUse payload uses toolCall.{name,args}
+    tool_call = input_data.get("toolCall")
+    if isinstance(tool_call, dict):
+        tc_name = _string_value(tool_call.get("name"))
+        tc_args = tool_call.get("args")
+        if tc_name == "invoke_subagent" and isinstance(tc_args, dict):
+            return (
+                _string_value(tc_args.get("TypeName")),
+                str(tc_args.get("Prompt", "")),
+                tc_args,
+            )
+
     tool_input = input_data.get("tool_input", {})
     if not isinstance(tool_input, dict):
         tool_input = input_data.get("toolInput", {})
@@ -1093,14 +1146,48 @@ def _parse_hook_input(input_data: dict) -> tuple[str, str, dict]:
     return "", "", tool_input
 
 
+def _load_hook_input() -> dict:
+    """Read hook JSON without trusting host runners to close stdin.
+
+    Kiro IDE `runCommand` and similar hook runners can leave stdin open while
+    sending no payload. A plain `json.load(sys.stdin)` then blocks forever.
+    Normal hook runners write the complete JSON payload and close stdin, so the
+    short daemon read preserves that path while failing closed to `{}` for
+    non-piping hosts. The abandoned daemon thread is safe: interpreter
+    shutdown discards daemon threads outright (threading docs), so the
+    process exits without waiting for the pipe.
+    """
+    result_queue: "queue.Queue[str | Exception]" = queue.Queue(maxsize=1)
+
+    def _read() -> None:
+        """Read all of stdin onto the queue; never raises."""
+        try:
+            result_queue.put(sys.stdin.read())
+        except Exception as exc:
+            result_queue.put(exc)
+
+    reader = threading.Thread(target=_read, daemon=True)
+    reader.start()
+    try:
+        raw = result_queue.get(timeout=0.2)
+    except queue.Empty:
+        return {}
+
+    if isinstance(raw, Exception):
+        return {}
+    try:
+        data = json.loads(raw) if raw.strip() else {}
+    except (json.JSONDecodeError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 def main():
+    """Rewrite the spawned sub-agent prompt with Trellis task context."""
     if os.environ.get("TRELLIS_HOOKS") == "0" or os.environ.get("TRELLIS_DISABLE_HOOKS") == "1":
         sys.exit(0)
 
-    try:
-        input_data = json.load(sys.stdin)
-    except json.JSONDecodeError:
-        sys.exit(0)
+    input_data = _load_hook_input()
     if not isinstance(input_data, dict):
         sys.exit(0)
 
@@ -1113,25 +1200,41 @@ def main():
             pass
         sys.exit(0)
 
+    def _exit_noop() -> NoReturn:
+        if _detect_platform(input_data) == "antigravity":
+            print("{}")
+        sys.exit(0)
+
     subagent_type, original_prompt, tool_input = _parse_hook_input(input_data)
-    cwd = input_data.get("cwd", os.getcwd())
+    cwd = input_data.get("cwd")
+    if not cwd:
+        ws_paths = input_data.get("workspacePaths")
+        if isinstance(ws_paths, list) and ws_paths and isinstance(ws_paths[0], str):
+            cwd = ws_paths[0]
+    cwd = cwd or os.getcwd()
 
     # Only handle subagent types we care about
     if subagent_type not in AGENTS_ALL:
-        sys.exit(0)
+        _exit_noop()
 
     # Find repo root
     repo_root = find_repo_root(cwd)
     if not repo_root:
-        sys.exit(0)
+        _exit_noop()
 
     # Get current task directory (research doesn't require it)
-    task_dir = get_current_task(repo_root, input_data)
+    task_dir = get_current_task(
+        repo_root,
+        input_data,
+        allow_single_session_fallback=True,
+    )
 
     # implement/check need task directory
-    if subagent_type in AGENTS_REQUIRE_TASK:
-        if not task_dir:
-            sys.exit(0)
+    if subagent_type in AGENTS_REQUIRE_TASK and not task_dir:
+        _exit_noop()
+
+    # Research output must use the same contained task pointer as other agents.
+    if task_dir:
         # Contain the pointer before reading anything through it. `task.py` now
         # refuses to store a ref that leaves the repo, but a session file
         # written before that fix can still hold one, and `trellis update`
@@ -1147,11 +1250,11 @@ def main():
             if not _real_path_contained(root_real, task_dir_full) and not (
                 _real_path_contained(workflow_real, task_dir_full)
             ):
-                sys.exit(0)
+                _exit_noop()
         except OSError:
-            sys.exit(0)
+            _exit_noop()
         if not os.path.exists(task_dir_full):
-            sys.exit(0)
+            _exit_noop()
 
     # Check for [finish] marker in prompt (check agent with finish context)
     is_finish_phase = "[finish]" in original_prompt.lower()
@@ -1174,18 +1277,29 @@ def main():
     elif subagent_type == AGENT_RESEARCH:
         # Research can work without task directory
         context = get_research_context(repo_root, task_dir)
-        new_prompt = build_research_prompt(original_prompt, context)
+        new_prompt = build_research_prompt(original_prompt, context, task_dir)
     else:
-        sys.exit(0)
+        _exit_noop()
 
     if not context:
+        _exit_noop()
+
+    platform = _detect_platform(input_data)
+    if platform == "antigravity":
+        output = {
+            "decision": "allow",
+            "overwrite": {
+                "Prompt": new_prompt,
+            },
+        }
+        print(json.dumps(output, ensure_ascii=False))
         sys.exit(0)
 
     # Return updated input. Most platforms ignore unrecognized fields, so we
     # include multiple formats. ZCode is stricter; live probing confirmed the
     # nested Claude-compatible shape below reaches the sub-agent prompt.
     updated = {**tool_input, "prompt": new_prompt}
-    if _detect_platform(input_data) == "zcode":
+    if platform == "zcode":
         output = {
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
