@@ -334,11 +334,11 @@ python3 ./.trellis/scripts/task.py create "<task title>" --slug <name>
 
 For task trees, create the parent task first and then create each child with `--parent <parent-dir>`. Do not start the parent just because children exist; start the child that owns the next independently verifiable deliverable.
 
-After this command succeeds, the per-turn breadcrumb auto-switches to `[workflow-state:planning]`, telling the AI to stay in planning.
+If the command activates the new task, the per-turn breadcrumb switches to `[workflow-state:planning]`. If an unfinished task remains active, its pointer and breadcrumb stay unchanged. Select the newly created directory as the planning target and read/write that directory's planning artifacts by path; do not infer the new task's phase or artifact paths from the active task's breadcrumb. For a child task, keep the parent's pointer until the child's planning artifacts have been reviewed and the user authorizes `start <child-dir> --switch` at step 1.4.
 
 Run only `create` here — do not also run `start`. `start` flips status to `in_progress`, which switches the breadcrumb to the implementation phase before planning artifacts are reviewed. Save `start` for step 1.4.
 
-Skip when `python3 ./.trellis/scripts/task.py current --source` already points to a task.
+Skip creation only when the intended task already exists; use its directory as the planning target. Another active task, including a parent, is not a reason to skip creating the intended task.
 
 #### 1.1 Requirement exploration `[required · repeatable]`
 

@@ -15,6 +15,7 @@ describe.skipIf(!hasPython)("task.py explicit task switching", () => {
   let tmp: string;
   let env: NodeJS.ProcessEnv;
 
+  /** Run the real CLI with isolated identity; null exercises degraded mode. */
   function run(session: string | null, ...args: string[]) {
     return spawnSync("python3", [".trellis/scripts/task.py", ...args], {
       cwd: tmp,
@@ -23,6 +24,7 @@ describe.skipIf(!hasPython)("task.py explicit task switching", () => {
     });
   }
 
+  /** Seed task metadata without lifecycle effects, including malformed statuses. */
   function seed(name: string, status: unknown = "planning"): string {
     const ref = `.trellis/tasks/${name}`;
     fs.mkdirSync(path.join(tmp, ref), { recursive: true });
@@ -33,25 +35,30 @@ describe.skipIf(!hasPython)("task.py explicit task switching", () => {
     return ref;
   }
 
+  /** Locate a session's pointer file for byte-level mutation assertions. */
   function pointer(session = "session-a"): string {
     return path.join(tmp, ".trellis/.runtime/sessions", `${session}.json`);
   }
 
+  /** Seed a pointer directly so setup does not depend on start's guard. */
   function activate(ref: string, session = "session-a"): void {
     fs.mkdirSync(path.dirname(pointer(session)), { recursive: true });
     fs.writeFileSync(pointer(session), JSON.stringify({ current_task: ref }));
   }
 
+  /** Read the persisted task reference for the requested session. */
   function current(session = "session-a"): string {
     return JSON.parse(fs.readFileSync(pointer(session), "utf-8")).current_task;
   }
 
+  /** Read a task's persisted status after a lifecycle command. */
   function status(ref: string): string {
     return JSON.parse(
       fs.readFileSync(path.join(tmp, ref, "task.json"), "utf-8"),
     ).status;
   }
 
+  /** Create the standard task in session A with optional scenario flags. */
   function create(...args: string[]) {
     return run(
       "session-a",
