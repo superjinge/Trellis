@@ -447,6 +447,10 @@ def cmd_list(args: argparse.Namespace) -> int:
     count = 0
 
     def _print_task(dir_name: str, indent: int = 0) -> None:
+        """Print and count matching tasks, recursing through hidden ancestors.
+
+        Increase indentation only for visible ancestors in the task tree.
+        """
         nonlocal count
         t = all_tasks[dir_name]
 
