@@ -149,6 +149,96 @@ def init_developer(name: str, repo_root: Path | None = None) -> bool:
     return True
 
 
+def ensure_workspace_scaffold(name: str, repo_root: Path | None = None) -> bool:
+    """Create `.trellis/workspace/<name>/` (journal-1.md + index.md) if missing.
+
+    Unlike `init_developer`, this does NOT write `.trellis/.developer`. It is
+    used when a linked worktree inherits the developer identity from its main
+    checkout but the checked-out branch does not yet contain the developer's
+    workspace directory.
+    """
+    if not name:
+        return False
+
+    if repo_root is None:
+        repo_root = get_repo_root()
+
+    workspace_dir = repo_root / DIR_WORKFLOW / DIR_WORKSPACE / name
+    try:
+        workspace_dir.mkdir(parents=True, exist_ok=True)
+    except (OSError, IOError) as e:
+        print(f"Error: Failed to create workspace directory: {e}", file=sys.stderr)
+        return False
+
+    journal_file = workspace_dir / f"{FILE_JOURNAL_PREFIX}1.md"
+    if not journal_file.exists():
+        today = datetime.now().strftime("%Y-%m-%d")
+        journal_content = f"""# Journal - {name} (Part 1)
+
+> AI development session journal
+> Started: {today}
+
+---
+
+"""
+        try:
+            journal_file.write_text(journal_content, encoding="utf-8")
+        except (OSError, IOError) as e:
+            print(f"Error: Failed to create journal file: {e}", file=sys.stderr)
+            return False
+
+    index_file = workspace_dir / "index.md"
+    if not index_file.exists():
+        index_content = f"""# Workspace Index - {name}
+
+> Journal tracking for AI development sessions.
+
+---
+
+## Current Status
+
+<!-- @@@auto:current-status -->
+- **Active File**: `journal-1.md`
+- **Total Sessions**: 0
+- **Last Active**: -
+<!-- @@@/auto:current-status -->
+
+---
+
+## Active Documents
+
+<!-- @@@auto:active-documents -->
+| File | Lines | Status |
+|------|-------|--------|
+| `journal-1.md` | ~0 | Active |
+<!-- @@@/auto:active-documents -->
+
+---
+
+## Session History
+
+<!-- @@@auto:session-history -->
+| # | Date | Title | Commits | Branch |
+|---|------|-------|---------|--------|
+<!-- @@@/auto:session-history -->
+
+---
+
+## Notes
+
+- Sessions are appended to journal files
+- New journal file created when current exceeds 2000 lines
+- Use `add_session.py` to record sessions
+"""
+        try:
+            index_file.write_text(index_content, encoding="utf-8")
+        except (OSError, IOError) as e:
+            print(f"Error: Failed to create index.md: {e}", file=sys.stderr)
+            return False
+
+    return True
+
+
 def ensure_developer(repo_root: Path | None = None) -> None:
     """Ensure developer is initialized, exit if not.
 

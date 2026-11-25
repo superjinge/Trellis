@@ -62,7 +62,7 @@ from common.paths import (
     get_developer,
     get_workspace_dir,
 )
-from common.developer import ensure_developer
+from common.developer import ensure_developer, ensure_workspace_scaffold
 from common.git import branch_exists_locally, run_git
 from common.io import write_text_atomic
 from common.log import Colors, colored
@@ -1212,6 +1212,10 @@ def add_session(
     if not dev_dir:
         print("Error: Workspace directory not found", file=sys.stderr)
         return 1
+
+    if not dev_dir.is_dir():
+        if not ensure_workspace_scaffold(developer, repo_root):
+            return 1
 
     # -------------------------------------------------------------------
     # Preflight — no writes happen until every one of these succeeds.
