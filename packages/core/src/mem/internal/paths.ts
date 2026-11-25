@@ -218,6 +218,33 @@ export function piSessionRoots(cwd?: string): string[] {
   return out;
 }
 
+/** Discover Antigravity (CLI / 2.0 / IDE) brain roots containing persisted
+ * conversation logs (`<brain>/<conversation-id>/.system_generated/logs/transcript.jsonl`).
+ *
+ * Read per call so `ANTIGRAVITY_BRAIN_DIR` overrides in tests or user shells
+ * take effect immediately.
+ */
+export function antigravityBrainRoots(): string[] {
+  const override = process.env.ANTIGRAVITY_BRAIN_DIR?.trim();
+  if (override) {
+    return [expandHome(override)];
+  }
+  const candidates = [
+    path.join(HOME, ".gemini", "antigravity-cli", "brain"),
+    path.join(HOME, ".gemini", "antigravity", "brain"),
+    path.join(HOME, ".gemini", "antigravity-ide", "brain"),
+  ];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const root of candidates) {
+    const normalized = path.resolve(root);
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
+    out.push(root);
+  }
+  return out;
+}
+
 /** Lazy stack-based recursive file walk — yields every file path under
  * `root`. Missing roots and unreadable directories are skipped silently. */
 export function* walkDir(root: string): Generator<string> {

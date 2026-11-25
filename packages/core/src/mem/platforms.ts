@@ -4,6 +4,12 @@
  */
 
 import {
+  antigravityExtractDialogue,
+  antigravityListSessions,
+  antigravitySearch,
+  collectAntigravityTurnsAndEvents,
+} from "./adapters/antigravity.js";
+import {
   claudeExtractDialogue,
   claudeListSessions,
   claudeSearch,
@@ -80,6 +86,13 @@ export interface MemPlatformAdapter {
 }
 
 export const MEM_PLATFORMS: Record<MemSourceKind, MemPlatformAdapter> = {
+  antigravity: {
+    phaseSupported: true,
+    list: (f) => antigravityListSessions(f),
+    extract: (s) => antigravityExtractDialogue(s),
+    search: (s, kw) => antigravitySearch(s, kw),
+    collect: (s) => collectAntigravityTurnsAndEvents(s),
+  },
   claude: {
     phaseSupported: true,
     list: (f) => claudeListSessions(f),

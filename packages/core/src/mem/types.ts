@@ -8,6 +8,7 @@
  */
 
 export const MEM_SOURCE_KINDS = [
+  "antigravity",
   "claude",
   "codex",
   "devin",
