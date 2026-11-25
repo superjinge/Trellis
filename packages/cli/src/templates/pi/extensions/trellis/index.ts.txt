@@ -101,8 +101,24 @@ const MAX_TOOL_ARG_CHARS = 2048;
 const MAX_TOOLS = 256;
 const MAX_PARALLEL_PROMPTS = 6;
 const ABORT_KILL_GRACE_MS = 1500;
+const DEFAULT_POST_AGENT_END_GRACE_MS = 5000;
+const DEFAULT_SUBAGENT_TIMEOUT_MS = 20 * 60 * 1000;
 const SESSION_OVERVIEW_TIMEOUT_MS = 1500;
 const THROTTLE_MS = 500;
+
+const scheduleTimeout: typeof setTimeout | null =
+  typeof setTimeout === "function" ? setTimeout : null;
+const cancelTimeout: typeof clearTimeout | null =
+  typeof clearTimeout === "function" ? clearTimeout : null;
+
+function readPositiveMsEnv(name: string, fallback: number, allowZero = false): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === "") return fallback;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) return fallback;
+  if (allowZero && parsed === 0) return 0;
+  return parsed > 0 ? parsed : fallback;
+}
 const FIRST_REPLY_NOTICE = `<first-reply-notice>
 On the first visible assistant reply in this session, briefly acknowledge that Trellis SessionStart context loaded.
 Choose the acknowledgment language in this order:
@@ -1546,33 +1562,185 @@ function runPi(
     let buf = "";
     let settled = false;
     let aborted = false;
+    let timedOut = false;
     let agentEnded = false;
+    let exitCodeSeen: number | null = null;
     let killTimer: ReturnType<typeof setTimeout> | null = null;
+    let forceCloseTimer: ReturnType<typeof setTimeout> | null = null;
+    let postEndTimer: ReturnType<typeof setTimeout> | null = null;
+    let exitDrainTimer: ReturnType<typeof setTimeout> | null = null;
+    let overallTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const postEndGraceMs = readPositiveMsEnv(
+      "TRELLIS_PI_SUBAGENT_SETTLE_GRACE_MS",
+      DEFAULT_POST_AGENT_END_GRACE_MS,
+    );
+    const overallTimeoutMs = readPositiveMsEnv(
+      "TRELLIS_PI_SUBAGENT_TIMEOUT_MS",
+      DEFAULT_SUBAGENT_TIMEOUT_MS,
+      true,
+    );
+
+    const destroyStreams = () => {
+      try {
+        cli.stdin?.destroy();
+      } catch {
+        // Ignore stream cleanup errors during forced settlement.
+      }
+      try {
+        cli.stdout?.destroy();
+      } catch {
+        // Ignore stream cleanup errors during forced settlement.
+      }
+      try {
+        cli.stderr?.destroy();
+      } catch {
+        // Ignore stream cleanup errors during forced settlement.
+      }
+    };
+
+    const terminateChild = (onForceSettle?: () => void) => {
+      if (cli.exitCode === null) {
+        try {
+          cli.kill("SIGTERM");
+        } catch {
+          // Ignore already-exited child errors.
+        }
+      }
+      if (!killTimer && scheduleTimeout) {
+        killTimer = scheduleTimeout(() => {
+          killTimer = null;
+          if (settled) return;
+          if (cli.exitCode === null) {
+            try {
+              cli.kill("SIGKILL");
+            } catch {
+              // Ignore already-exited child errors.
+            }
+          }
+          destroyStreams();
+          if (onForceSettle && !forceCloseTimer && scheduleTimeout) {
+            forceCloseTimer = scheduleTimeout(() => {
+              forceCloseTimer = null;
+              if (!settled) onForceSettle();
+            }, 200);
+            forceCloseTimer?.unref?.();
+          }
+        }, ABORT_KILL_GRACE_MS);
+        killTimer?.unref?.();
+      }
+    };
+
+    const settleFromObservedState = (code: number | null) => {
+      if (buf.trim()) {
+        processLine(buf);
+        buf = "";
+      }
+      const err = stderr.toString();
+      state.stderrTail = appendTail("", err, MAX_TAIL);
+      state.finishedAt = Date.now();
+      if (aborted) {
+        state.status = "cancelled";
+        state.errorMessage = "cancelled";
+        done({ output: finalize(state, "cancelled"), failed: true });
+        return;
+      }
+      if (timedOut) {
+        state.status = "failed";
+        state.errorMessage =
+          state.errorMessage ||
+          `Pi subagent timed out after ${Math.round(overallTimeoutMs / 1000)}s.`;
+        done({ output: finalize(state, state.errorMessage), failed: true });
+        return;
+      }
+      if (code === 0 || (code === null && agentEnded)) {
+        if (
+          state.status === "failed" ||
+          state.status === "cancelled" ||
+          state.errorMessage
+        ) {
+          if (state.status !== "cancelled") state.status = "failed";
+          done({
+            output: finalize(
+              state,
+              state.errorMessage || `Pi subagent ${state.status}`,
+            ),
+            failed: true,
+          });
+          return;
+        }
+        if (!agentEnded) {
+          state.status = "failed";
+          state.errorMessage = "Pi child exited before agent_end.";
+          done({ output: finalize(state, state.errorMessage), failed: true });
+          return;
+        }
+        state.status = "succeeded";
+        done({
+          output: finalize(state, ""),
+          failed: false,
+        });
+        return;
+      }
+      state.status = "failed";
+      state.errorMessage =
+        state.errorMessage ||
+        err.trim() ||
+        `Pi child exited with code ${code ?? "?"}.`;
+      done({ output: finalize(state, state.errorMessage), failed: true });
+    };
+
     const abort = () => {
       aborted = true;
-      cli.kill();
-      killTimer = setTimeout(() => {
-        if (!settled && cli.exitCode === null) cli.kill("SIGKILL");
-      }, ABORT_KILL_GRACE_MS);
-      killTimer?.unref?.();
+      terminateChild(() => settleFromObservedState(exitCodeSeen));
     };
     const done = (v: { output: string; failed: boolean }) => {
       if (settled) return;
       settled = true;
-      if (killTimer) clearTimeout(killTimer);
+      if (killTimer && cancelTimeout) cancelTimeout(killTimer);
+      if (forceCloseTimer && cancelTimeout) cancelTimeout(forceCloseTimer);
+      if (postEndTimer && cancelTimeout) cancelTimeout(postEndTimer);
+      if (exitDrainTimer && cancelTimeout) cancelTimeout(exitDrainTimer);
+      if (overallTimer && cancelTimeout) cancelTimeout(overallTimer);
       signal?.removeEventListener("abort", abort);
       if (v.failed && state.status !== "cancelled") state.status = "failed";
       emit();
       resolve({ ...v, output: limitOutput(v.output) });
     };
     signal?.addEventListener("abort", abort, { once: true });
+    if (overallTimeoutMs > 0 && scheduleTimeout) {
+      overallTimer = scheduleTimeout(() => {
+        overallTimer = null;
+        if (settled) return;
+        timedOut = true;
+        terminateChild(() => settleFromObservedState(exitCodeSeen));
+      }, overallTimeoutMs);
+      overallTimer?.unref?.();
+    }
     state.status = "running";
     state.startedAt = Date.now();
     emit();
     const processLine = (line: string) => {
       const evt = parseJsonEvent(line);
-      if (evt?.type === "agent_start") agentEnded = false;
-      if (evt?.type === "agent_end") agentEnded = true;
+      if (evt?.type === "agent_start") {
+        agentEnded = false;
+        if (postEndTimer && cancelTimeout) {
+          cancelTimeout(postEndTimer);
+          postEndTimer = null;
+        }
+      }
+      if (evt?.type === "agent_end") {
+        agentEnded = true;
+        if (postEndTimer && cancelTimeout) cancelTimeout(postEndTimer);
+        if (scheduleTimeout) {
+          postEndTimer = scheduleTimeout(() => {
+            postEndTimer = null;
+            if (settled || !agentEnded) return;
+            terminateChild(() => settleFromObservedState(exitCodeSeen));
+          }, postEndGraceMs);
+          postEndTimer?.unref?.();
+        }
+      }
       if (evt && applyEvent(state, evt)) emit();
     };
     cli.stdout?.on("data", (d: Buffer) => {
@@ -1600,45 +1768,22 @@ function runPi(
       state.finishedAt = Date.now();
       done({ output: finalize(state, state.errorMessage), failed: true });
     });
+    cli.on("exit", (code) => {
+      exitCodeSeen = code;
+      if (settled || exitDrainTimer || !scheduleTimeout) return;
+      // If a descendant process holds inherited stdout/stderr pipes open after
+      // the Pi leader exits, `close` will never fire. Bound the drain window
+      // and destroy the pipes so the parent tool settles promptly (issue #662).
+      exitDrainTimer = scheduleTimeout(() => {
+        exitDrainTimer = null;
+        if (settled) return;
+        destroyStreams();
+        settleFromObservedState(code);
+      }, ABORT_KILL_GRACE_MS);
+      exitDrainTimer?.unref?.();
+    });
     cli.on("close", (code) => {
-      if (buf.trim()) processLine(buf);
-      const err = stderr.toString();
-      state.stderrTail = appendTail("", err, MAX_TAIL);
-      state.finishedAt = Date.now();
-      if (aborted) {
-        state.status = "cancelled";
-        state.errorMessage = "cancelled";
-        done({ output: finalize(state, "cancelled"), failed: true });
-        return;
-      }
-      if (code === 0) {
-        if (
-          state.status === "failed" || state.status === "cancelled" || state.errorMessage
-        ) {
-          if (state.status !== "cancelled") state.status = "failed";
-          done({
-            output: finalize(state, state.errorMessage || `Pi subagent ${state.status}`),
-            failed: true,
-          });
-          return;
-        }
-        if (!agentEnded) {
-          state.status = "failed";
-          state.errorMessage = "Pi child exited before agent_end.";
-          done({ output: finalize(state, state.errorMessage), failed: true });
-          return;
-        }
-        state.status = "succeeded";
-        done({
-          output: finalize(state, ""),
-          failed: false,
-        });
-        return;
-      }
-      state.status = "failed";
-      state.errorMessage =
-        state.errorMessage || err.trim() || `Pi child exited with code ${code ?? "?"}.`;
-      done({ output: finalize(state, state.errorMessage), failed: true });
+      settleFromObservedState(code);
     });
     cli.stdin?.end(prompt);
   });

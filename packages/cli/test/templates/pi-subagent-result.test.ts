@@ -305,4 +305,63 @@ describe("Pi subagent result boundary (#625, #626, #636)", () => {
     expect(readFileSync(join(root, "child-runs.txt"), "utf-8")).toBe("run\n");
     expect(isError).toBe(true);
   });
+
+  it("settles after agent_end even if the child ignores SIGTERM and stays alive (#662)", async () => {
+    writeFileSync(
+      cli,
+      [
+        `console.log(JSON.stringify(${JSON.stringify(assistant("completed before stall"))}));`,
+        'console.log(JSON.stringify({ type: "agent_end", messages: [] }));',
+        'process.on("SIGTERM", () => {});',
+        "setInterval(() => {}, 1000);",
+      ].join("\n"),
+    );
+    const prevGrace = process.env.TRELLIS_PI_SUBAGENT_SETTLE_GRACE_MS;
+    process.env.TRELLIS_PI_SUBAGENT_SETTLE_GRACE_MS = "150";
+    try {
+      const { tool, patchResult } = loadTool(root, cli);
+      const result = await tool.execute(
+        "stall-after-end",
+        { agent: "trellis-check", prompt: "Check the task" },
+        undefined,
+        undefined,
+        { cwd: root },
+      );
+      expect(result.content[0]?.text).toBe("completed before stall");
+      expect(result.details.runs[0]?.status).toBe("succeeded");
+      expect(patchResult(result)?.isError ?? false).toBe(false);
+    } finally {
+      if (prevGrace === undefined) delete process.env.TRELLIS_PI_SUBAGENT_SETTLE_GRACE_MS;
+      else process.env.TRELLIS_PI_SUBAGENT_SETTLE_GRACE_MS = prevGrace;
+    }
+  });
+
+  it("fails with timeout when the child hangs before agent_end (#662)", async () => {
+    writeFileSync(
+      cli,
+      [
+        'console.log(JSON.stringify({ type: "agent_start" }));',
+        'process.on("SIGTERM", () => {});',
+        "setInterval(() => {}, 1000);",
+      ].join("\n"),
+    );
+    const prevTimeout = process.env.TRELLIS_PI_SUBAGENT_TIMEOUT_MS;
+    process.env.TRELLIS_PI_SUBAGENT_TIMEOUT_MS = "200";
+    try {
+      const { tool, patchResult } = loadTool(root, cli);
+      const result = await tool.execute(
+        "overall-timeout",
+        { agent: "trellis-check", prompt: "Check the task" },
+        undefined,
+        undefined,
+        { cwd: root },
+      );
+      expect(result.details.runs[0]?.status).toBe("failed");
+      expect(result.content[0]?.text).toContain("timed out");
+      expect(patchResult(result)?.isError).toBe(true);
+    } finally {
+      if (prevTimeout === undefined) delete process.env.TRELLIS_PI_SUBAGENT_TIMEOUT_MS;
+      else process.env.TRELLIS_PI_SUBAGENT_TIMEOUT_MS = prevTimeout;
+    }
+  });
 });
