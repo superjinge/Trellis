@@ -135,4 +135,44 @@ describe("antigravity mem adapter", () => {
     expect(antigravityListSessions({ cwd: projectDir })).toHaveLength(0);
     expect(antigravityListSessions({})).toHaveLength(1);
   });
+
+  it("uses majority vote for inferred cwd and preserves literal </USER_REQUEST> inside user text", () => {
+    const refRepo = path.join(tmpRoot, "ref-repo");
+    fs.mkdirSync(path.join(refRepo, ".git"), { recursive: true });
+    const refFile = path.join(refRepo, "README.md");
+    const mainFile1 = path.join(projectDir, "src", "a.ts");
+    const mainFile2 = path.join(projectDir, "src", "b.ts");
+    fs.writeFileSync(refFile, "# ref\n");
+    fs.mkdirSync(path.dirname(mainFile1), { recursive: true });
+    fs.writeFileSync(mainFile1, "export const a = 1;\n");
+    fs.writeFileSync(mainFile2, "export const b = 2;\n");
+
+    writeTranscript("conv-vote", [
+      {
+        step_index: 1,
+        type: "USER_INPUT",
+        created_at: "2026-11-25T10:00:00Z",
+        content:
+          "<USER_REQUEST>\nFix regex when input mentions </USER_REQUEST> literally\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nmeta\n</ADDITIONAL_METADATA>",
+      },
+      {
+        step_index: 2,
+        type: "PLANNER_RESPONSE",
+        created_at: "2026-11-25T10:01:00Z",
+        tool_calls: [
+          { name: "read_file", args: { Path: JSON.stringify(refFile) } },
+          { name: "read_file", args: { Path: JSON.stringify(mainFile1) } },
+          { name: "read_file", args: { Path: JSON.stringify(mainFile2) } },
+        ],
+      },
+    ]);
+
+    const sessions = antigravityListSessions({ cwd: projectDir });
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]?.cwd).toBe(path.resolve(projectDir));
+    const turns = antigravityExtractDialogue(sessions[0]!);
+    expect(turns[0]?.text).toBe(
+      "Fix regex when input mentions </USER_REQUEST> literally",
+    );
+  });
 });

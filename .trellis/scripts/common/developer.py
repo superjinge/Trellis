@@ -67,80 +67,8 @@ def init_developer(name: str, repo_root: Path | None = None) -> bool:
         print(f"Error: Failed to create .developer file: {e}", file=sys.stderr)
         return False
 
-    # Create workspace directory structure
-    try:
-        workspace_dir.mkdir(parents=True, exist_ok=True)
-    except (OSError, IOError) as e:
-        print(f"Error: Failed to create workspace directory: {e}", file=sys.stderr)
+    if not ensure_workspace_scaffold(name, repo_root):
         return False
-
-    # Create initial journal file
-    journal_file = workspace_dir / f"{FILE_JOURNAL_PREFIX}1.md"
-    if not journal_file.exists():
-        today = datetime.now().strftime("%Y-%m-%d")
-        journal_content = f"""# Journal - {name} (Part 1)
-
-> AI development session journal
-> Started: {today}
-
----
-
-"""
-        try:
-            journal_file.write_text(journal_content, encoding="utf-8")
-        except (OSError, IOError) as e:
-            print(f"Error: Failed to create journal file: {e}", file=sys.stderr)
-            return False
-
-    # Create index.md with markers for auto-update
-    index_file = workspace_dir / "index.md"
-    if not index_file.exists():
-        index_content = f"""# Workspace Index - {name}
-
-> Journal tracking for AI development sessions.
-
----
-
-## Current Status
-
-<!-- @@@auto:current-status -->
-- **Active File**: `journal-1.md`
-- **Total Sessions**: 0
-- **Last Active**: -
-<!-- @@@/auto:current-status -->
-
----
-
-## Active Documents
-
-<!-- @@@auto:active-documents -->
-| File | Lines | Status |
-|------|-------|--------|
-| `journal-1.md` | ~0 | Active |
-<!-- @@@/auto:active-documents -->
-
----
-
-## Session History
-
-<!-- @@@auto:session-history -->
-| # | Date | Title | Commits | Branch |
-|---|------|-------|---------|--------|
-<!-- @@@/auto:session-history -->
-
----
-
-## Notes
-
-- Sessions are appended to journal files
-- New journal file created when current exceeds 2000 lines
-- Use `add_session.py` to record sessions
-"""
-        try:
-            index_file.write_text(index_content, encoding="utf-8")
-        except (OSError, IOError) as e:
-            print(f"Error: Failed to create index.md: {e}", file=sys.stderr)
-            return False
 
     print(f"Developer initialized: {name}")
     print(f"  .developer file: {dev_file}")

@@ -32,7 +32,7 @@ import queue
 import sys
 import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 # Hook hosts send UTF-8 JSON regardless of the process locale.
 _stdin_reconfigure = getattr(sys.stdin, "reconfigure", None)
@@ -1175,6 +1175,11 @@ def main():
             pass
         sys.exit(0)
 
+    def _exit_noop() -> NoReturn:
+        if _detect_platform(input_data) == "antigravity":
+            print("{}")
+        sys.exit(0)
+
     subagent_type, original_prompt, tool_input = _parse_hook_input(input_data)
     cwd = input_data.get("cwd")
     if not cwd:
@@ -1185,12 +1190,12 @@ def main():
 
     # Only handle subagent types we care about
     if subagent_type not in AGENTS_ALL:
-        sys.exit(0)
+        _exit_noop()
 
     # Find repo root
     repo_root = find_repo_root(cwd)
     if not repo_root:
-        sys.exit(0)
+        _exit_noop()
 
     # Get current task directory (research doesn't require it)
     task_dir = get_current_task(
@@ -1202,7 +1207,7 @@ def main():
     # implement/check need task directory
     if subagent_type in AGENTS_REQUIRE_TASK:
         if not task_dir:
-            sys.exit(0)
+            _exit_noop()
         # Contain the pointer before reading anything through it. `task.py` now
         # refuses to store a ref that leaves the repo, but a session file
         # written before that fix can still hold one, and `trellis update`
@@ -1218,11 +1223,11 @@ def main():
             if not _real_path_contained(root_real, task_dir_full) and not (
                 _real_path_contained(workflow_real, task_dir_full)
             ):
-                sys.exit(0)
+                _exit_noop()
         except OSError:
-            sys.exit(0)
+            _exit_noop()
         if not os.path.exists(task_dir_full):
-            sys.exit(0)
+            _exit_noop()
 
     # Check for [finish] marker in prompt (check agent with finish context)
     is_finish_phase = "[finish]" in original_prompt.lower()
@@ -1247,10 +1252,10 @@ def main():
         context = get_research_context(repo_root, task_dir)
         new_prompt = build_research_prompt(original_prompt, context)
     else:
-        sys.exit(0)
+        _exit_noop()
 
     if not context:
-        sys.exit(0)
+        _exit_noop()
 
     platform = _detect_platform(input_data)
     if platform == "antigravity":

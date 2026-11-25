@@ -306,6 +306,7 @@ export const AI_TOOLS: Record<AITool, AIToolConfig> = {
     configDir: ".agent/workflows",
     supportsAgentSkills: true,
     extraManagedPaths: [
+      ".agent/skills",
       ".agents/agents",
       ".agents/hooks",
       ".agents/hooks.json",

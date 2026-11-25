@@ -29,7 +29,10 @@ import { collectCodexTemplates, configureCodex } from "./codex.js";
 import { collectKiloTemplates } from "./kilo.js";
 import { collectKiroTemplates } from "./kiro.js";
 import { collectGeminiTemplates } from "./gemini.js";
-import { collectAntigravityTemplates } from "./antigravity.js";
+import {
+  collectAntigravityTemplates,
+  configureAntigravity,
+} from "./antigravity.js";
 import { collectDevinTemplates } from "./devin.js";
 import { collectQoderTemplates } from "./qoder.js";
 import { collectCodebuddyTemplates } from "./codebuddy.js";
@@ -93,7 +96,10 @@ const PLATFORM_FUNCTIONS: Record<AITool, PlatformFunctions> = {
   kilo: fromTemplates(collectKiloTemplates),
   kiro: fromTemplates(collectKiroTemplates),
   gemini: fromTemplates(collectGeminiTemplates),
-  antigravity: fromTemplates(collectAntigravityTemplates),
+  antigravity: {
+    configure: configureAntigravity,
+    collectTemplates: collectAntigravityTemplates,
+  },
   devin: fromTemplates(collectDevinTemplates),
   qoder: fromTemplates(collectQoderTemplates),
   codebuddy: fromTemplates(collectCodebuddyTemplates),

@@ -170,6 +170,8 @@ class CLIAdapter:
         mapped_name = self.get_agent_name(agent)
         if self.platform == "codex":
             return self.get_config_dir(project_root) / "agents" / f"{mapped_name}.toml"
+        if self.platform == "antigravity":
+            return project_root / ".agents" / "agents" / f"{mapped_name}.md"
         return self.get_config_dir(project_root) / "agents" / f"{mapped_name}.md"
 
     def get_commands_path(self, project_root: Path, *parts: str) -> Path:

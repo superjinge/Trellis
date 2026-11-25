@@ -16,6 +16,7 @@ Common files:
 
 | Platform | settings/config |
 | --- | --- |
+| Antigravity | `.agents/hooks.json` |
 | Claude Code | `.claude/settings.json` |
 | Cursor | `.cursor/hooks.json` |
 | Codex | `.codex/hooks.json`, `.codex/config.toml` |

@@ -336,6 +336,36 @@ describe("Pi subagent result boundary (#625, #626, #636)", () => {
     }
   });
 
+  it("treats non-zero exit caused by post-agent_end SIGTERM cleanup as success (#662)", async () => {
+    writeFileSync(
+      cli,
+      [
+        `console.log(JSON.stringify(${JSON.stringify(assistant("completed before exit 143"))}));`,
+        'console.log(JSON.stringify({ type: "agent_end", messages: [] }));',
+        'process.on("SIGTERM", () => process.exit(143));',
+        "setInterval(() => {}, 1000);",
+      ].join("\n"),
+    );
+    const prevGrace = process.env.TRELLIS_PI_SUBAGENT_SETTLE_GRACE_MS;
+    process.env.TRELLIS_PI_SUBAGENT_SETTLE_GRACE_MS = "150";
+    try {
+      const { tool, patchResult } = loadTool(root, cli);
+      const result = await tool.execute(
+        "sigterm-exit-143",
+        { agent: "trellis-check", prompt: "Check the task" },
+        undefined,
+        undefined,
+        { cwd: root },
+      );
+      expect(result.content[0]?.text).toBe("completed before exit 143");
+      expect(result.details.runs[0]?.status).toBe("succeeded");
+      expect(patchResult(result)?.isError ?? false).toBe(false);
+    } finally {
+      if (prevGrace === undefined) delete process.env.TRELLIS_PI_SUBAGENT_SETTLE_GRACE_MS;
+      else process.env.TRELLIS_PI_SUBAGENT_SETTLE_GRACE_MS = prevGrace;
+    }
+  });
+
   it("fails with timeout when the child hangs before agent_end (#662)", async () => {
     writeFileSync(
       cli,
@@ -357,7 +387,7 @@ describe("Pi subagent result boundary (#625, #626, #636)", () => {
         { cwd: root },
       );
       expect(result.details.runs[0]?.status).toBe("failed");
-      expect(result.content[0]?.text).toContain("timed out");
+      expect(result.content[0]?.text).toContain("timed out after 200ms");
       expect(patchResult(result)?.isError).toBe(true);
     } finally {
       if (prevTimeout === undefined) delete process.env.TRELLIS_PI_SUBAGENT_TIMEOUT_MS;

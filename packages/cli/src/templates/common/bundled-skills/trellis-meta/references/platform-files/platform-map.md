@@ -13,7 +13,7 @@ This page lists common Trellis file locations in a user project by platform. Whe
 | Kilo | `--kilo` | `.kilocode/` | `.kilocode/skills/` | Usually none | `.kilocode/workflows/` |
 | Kiro | `--kiro` | `.kiro/` | `.kiro/skills/` | `.kiro/agents/` | `.kiro/hooks/` |
 | Gemini CLI | `--gemini` | `.gemini/` | `.agents/skills/` | `.gemini/agents/` | `.gemini/settings.json` + `.gemini/hooks/` |
-| Antigravity | `--antigravity` | `.agent/` | `.agent/skills/` | Usually none | `.agent/workflows/` |
+| Antigravity | `--antigravity` | `.agent/` + `.agents/` | `.agents/skills/` (shared) | `.agents/agents/` (`invoke_subagent`) | `.agents/hooks.json` + `.agents/hooks/` + `.agent/workflows/` |
 | Devin | `--devin` | `.devin/` | `.devin/skills/` | Usually none | `.devin/workflows/` |
 | Qoder | `--qoder` | `.qoder/` | `.qoder/skills/` | `.qoder/agents/` | `.qoder/hooks/` + `.qoder/settings.json` |
 | CodeBuddy | `--codebuddy` | `.codebuddy/` | `.codebuddy/skills/` | `.codebuddy/agents/` | `.codebuddy/hooks/` + `.codebuddy/settings.json` |
@@ -35,6 +35,7 @@ This page lists common Trellis file locations in a user project by platform. Whe
 These platforms usually have `trellis-research`, `trellis-implement`, and `trellis-check` files:
 
 - Claude Code
+- Antigravity (`.agents/agents/`; dispatch via `invoke_subagent` with `TypeName`)
 - Cursor
 - OpenCode
 - Codex
@@ -67,14 +68,13 @@ When changing sub-agent dispatch behavior on these platforms, edit the extension
 These platforms rely more on workflows/skills to guide the main session:
 
 - Kilo
-- Antigravity
 - Devin
 
 When changing behavior, inspect workflows and skills first. Do not assume Trellis sub-agents exist.
 
 ### Shared `.agents/skills/`
 
-Codex, Gemini CLI, Pi Agent, Kimi Code, and DeepSeek Harness (dsh) write the shared `.agents/skills/` layer. Some tools that support agentskills.io can also read this directory. If the user wants multiple compatible tools to share one skill, consider `.agents/skills/` first, but do not assume every platform reads it. ZCode keeps Trellis-managed skills under `.zcode/skills/`.
+Antigravity, Codex, Gemini CLI, Pi Agent, Kimi Code, and DeepSeek Harness (dsh) write the shared `.agents/skills/` layer. Some tools that support agentskills.io can also read this directory. If the user wants multiple compatible tools to share one skill, consider `.agents/skills/` first, but do not assume every platform reads it. ZCode keeps Trellis-managed skills under `.zcode/skills/`.
 
 ## Decision Rules When Modifying Platform Files
 

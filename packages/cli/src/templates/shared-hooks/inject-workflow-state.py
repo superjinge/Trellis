@@ -36,6 +36,7 @@ misreporting the session as having no active task.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -431,21 +432,61 @@ def _load_hook_input() -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def _should_skip_antigravity_repeat(root: Path, data: dict) -> bool:
+    """Deduplicate PreInvocation within a single user turn without assuming
+    invocationNum resets to 1 on every turn.
+
+    Antigravity fires PreInvocation before each model step inside a tool loop.
+    We key each turn on `(initialNumSteps, lastUserInput)` (when available) per
+    conversation and persist the last seen signature under `.trellis/.runtime/`.
+    A new user turn changes `initialNumSteps` or `lastUserInput` and always
+    injects fresh workflow-state; repeated calls within the same turn skip.
+    """
+    conv_id = data.get("conversationId") or data.get("conversation_id")
+    if not isinstance(conv_id, str) or not conv_id.strip():
+        return False
+
+    initial_steps = data.get("initialNumSteps")
+    last_input = data.get("lastUserInput")
+    has_steps = isinstance(initial_steps, int)
+    last_input_str = last_input if isinstance(last_input, str) and last_input.strip() else None
+    if not has_steps and last_input_str is None:
+        return False
+
+    sig_payload = json.dumps(
+        {
+            "initialNumSteps": initial_steps if has_steps else None,
+            "lastUserInputHash": (
+                hashlib.sha256(last_input_str.encode("utf-8")).hexdigest()[:16]
+                if last_input_str is not None
+                else None
+            ),
+        },
+        sort_keys=True,
+    )
+    safe_conv = hashlib.sha256(conv_id.strip().encode("utf-8")).hexdigest()[:16]
+    marker_path = root / ".trellis" / ".runtime" / f"agy-preinvocation-{safe_conv}.json"
+
+    try:
+        if marker_path.is_file() and marker_path.read_text(encoding="utf-8") == sig_payload:
+            return True
+    except OSError:
+        return False
+
+    try:
+        marker_path.parent.mkdir(parents=True, exist_ok=True)
+        marker_path.write_text(sig_payload, encoding="utf-8")
+    except OSError:
+        pass  # Best-effort dedup marker; never block injection.
+    return False
+
+
 def main() -> int:
     if os.environ.get("TRELLIS_HOOKS") == "0" or os.environ.get("TRELLIS_DISABLE_HOOKS") == "1":
         return 0
 
     data = _load_hook_input()
     platform = _detect_platform(data)
-
-    # Antigravity fires PreInvocation on every model step inside a single turn
-    # (invocationNum = 1, 2, 3...). Inject only on the first model call of the
-    # turn so tool-call loops do not repeatedly duplicate <workflow-state>.
-    if platform == "antigravity":
-        inv_num = data.get("invocationNum")
-        if isinstance(inv_num, int) and inv_num > 1:
-            print("{}")
-            return 0
 
     cwd_str = data.get("cwd")
     if not cwd_str:
@@ -459,6 +500,10 @@ def main() -> int:
         if platform == "antigravity":
             print("{}")
         return 0  # not a Trellis project
+
+    if platform == "antigravity" and _should_skip_antigravity_repeat(root, data):
+        print("{}")
+        return 0
 
     config = _read_trellis_config(root)
     prompt_text = data.get("prompt") or data.get("lastUserInput") or ""

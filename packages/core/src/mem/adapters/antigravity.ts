@@ -52,7 +52,7 @@ interface AntigravityBuilt {
   events: TaskPyEvent[];
 }
 
-const USER_REQUEST_RE = /<USER_REQUEST>\s*([\s\S]*?)\s*<\/USER_REQUEST>/;
+const USER_REQUEST_RE = /<USER_REQUEST>\s*([\s\S]*)\s*<\/USER_REQUEST>/;
 const META_BLOCK_RE =
   /<(?:ADDITIONAL_METADATA|USER_SETTINGS_CHANGE)>[\s\S]*?<\/(?:ADDITIONAL_METADATA|USER_SETTINGS_CHANGE)>/g;
 
@@ -72,8 +72,9 @@ function unwrapArgString(raw: unknown): string | undefined {
 }
 
 function cleanUserContent(raw: string): string {
-  const match = USER_REQUEST_RE.exec(raw);
-  const extracted = match ? match[1] : raw.replace(META_BLOCK_RE, "");
+  const withoutMeta = raw.replace(META_BLOCK_RE, "").trim();
+  const match = USER_REQUEST_RE.exec(withoutMeta);
+  const extracted = match ? match[1] : withoutMeta;
   return stripInjectionTags(extracted).trim();
 }
 
@@ -129,7 +130,7 @@ function findWorkspaceRootFromPath(candidatePath: string): string | undefined {
   return start;
 }
 
-function inferCwdFromEntry(entry: AntigravityEntry): string | undefined {
+function explicitCwdFromEntry(entry: AntigravityEntry): string | undefined {
   if (typeof entry.cwd === "string" && entry.cwd.trim()) {
     return entry.cwd.trim();
   }
@@ -143,7 +144,14 @@ function inferCwdFromEntry(entry: AntigravityEntry): string | undefined {
   ) {
     return entry.workspacePaths[0].trim();
   }
-  if (!Array.isArray(entry.tool_calls)) return undefined;
+  return undefined;
+}
+
+function recordToolCwdVotes(
+  entry: AntigravityEntry,
+  votes: Map<string, number>,
+): void {
+  if (!Array.isArray(entry.tool_calls)) return;
   for (const call of entry.tool_calls) {
     const args = call?.args;
     if (!args || typeof args !== "object") continue;
@@ -151,10 +159,23 @@ function inferCwdFromEntry(entry: AntigravityEntry): string | undefined {
       const val = unwrapArgString(args[key]);
       if (!val) continue;
       const root = findWorkspaceRootFromPath(val);
-      if (root) return root;
+      if (root) {
+        votes.set(root, (votes.get(root) ?? 0) + 1);
+      }
     }
   }
-  return undefined;
+}
+
+function topVotedCwd(votes: Map<string, number>): string | undefined {
+  let best: string | undefined;
+  let bestCount = 0;
+  for (const [candidate, count] of votes) {
+    if (count > bestCount) {
+      best = candidate;
+      bestCount = count;
+    }
+  }
+  return best;
 }
 
 function candidateTranscripts(): { id: string; filePath: string }[] {
@@ -193,9 +214,22 @@ export function antigravityListSessions(f: MemFilter): MemSessionInfo[] {
   const out: MemSessionInfo[] = [];
 
   for (const { id, filePath } of candidateTranscripts()) {
+    let statMtime: Date | undefined;
+    try {
+      statMtime = fs.statSync(filePath).mtime;
+      // Fast pre-filter: a transcript untouched since before `f.since` cannot
+      // overlap the requested range, avoiding full JSONL parsing of old logs.
+      if (f.since && statMtime.getTime() < f.since.getTime()) {
+        continue;
+      }
+    } catch {
+      /* proceed without mtime pre-filter */
+    }
+
     let created: string | undefined;
     let updated: string | undefined;
-    let cwd: string | undefined;
+    let explicitCwd: string | undefined;
+    const cwdVotes = new Map<string, number>();
     let firstUserText: string | undefined;
 
     readJsonl<AntigravityEntry>(filePath, (entry) => {
@@ -204,8 +238,11 @@ export function antigravityListSessions(f: MemFilter): MemSessionInfo[] {
           ? entry.created_at.trim()
           : undefined;
       if (ts && !created) created = ts;
-      if (!cwd) {
-        cwd = inferCwdFromEntry(entry);
+      if (!explicitCwd) {
+        explicitCwd = explicitCwdFromEntry(entry);
+      }
+      if (!explicitCwd) {
+        recordToolCwdVotes(entry, cwdVotes);
       }
 
       if (entry.type === "USER_INPUT" && typeof entry.content === "string") {
@@ -224,14 +261,11 @@ export function antigravityListSessions(f: MemFilter): MemSessionInfo[] {
       }
     });
 
+    const cwd = explicitCwd ?? topVotedCwd(cwdVotes);
     if (f.cwd && !sameProject(cwd, f.cwd)) continue;
 
-    if (!updated) {
-      try {
-        updated = fs.statSync(filePath).mtime.toISOString();
-      } catch {
-        /* leave undefined */
-      }
+    if (!updated && statMtime) {
+      updated = statMtime.toISOString();
     }
     if (!inRangeOverlap(created, updated, f)) continue;
 

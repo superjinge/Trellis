@@ -43,7 +43,7 @@
           {
             "type": "command",
             "command": "{{PYTHON_CMD}} ./hooks/inject-shell-session-context.py",
-            "timeout": 5
+            "timeout": 10
           }
         ]
       }

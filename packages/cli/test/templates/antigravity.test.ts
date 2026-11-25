@@ -102,7 +102,8 @@ describe("Antigravity 2.0 & CLI integration", () => {
       "<session-context>",
     );
 
-    // 2. PreInvocation emits workflow-state on invocationNum=1 and {} on invocationNum=2
+    // 2. PreInvocation deduplicates within the same turn and re-injects on a new turn
+    // even if invocationNum increases monotonically across turns.
     const piOut1 = execFileSync(
       PYTHON_CMD,
       [path.join(hooksDir, "inject-workflow-state.py")],
@@ -114,6 +115,7 @@ describe("Antigravity 2.0 & CLI integration", () => {
           cwd: tmpDir,
           hookEventName: "PreInvocation",
           invocationNum: 1,
+          initialNumSteps: 10,
           lastUserInput: "Add new feature",
         }),
         encoding: "utf-8",
@@ -137,6 +139,7 @@ describe("Antigravity 2.0 & CLI integration", () => {
           cwd: tmpDir,
           hookEventName: "PreInvocation",
           invocationNum: 2,
+          initialNumSteps: 10,
           lastUserInput: "Add new feature",
         }),
         encoding: "utf-8",
@@ -144,7 +147,31 @@ describe("Antigravity 2.0 & CLI integration", () => {
     );
     expect(JSON.parse(piOut2)).toEqual({});
 
-    // 3. PreToolUse(run_command) writes shell ticket silently without emitting decision=allow
+    const piOut3 = execFileSync(
+      PYTHON_CMD,
+      [path.join(hooksDir, "inject-workflow-state.py")],
+      {
+        cwd: path.join(tmpDir, ".agents"),
+        input: JSON.stringify({
+          conversationId: convId,
+          workspacePaths: [tmpDir],
+          cwd: tmpDir,
+          hookEventName: "PreInvocation",
+          invocationNum: 3,
+          initialNumSteps: 16,
+          lastUserInput: "Now write tests",
+        }),
+        encoding: "utf-8",
+      },
+    );
+    const piJson3 = JSON.parse(piOut3) as {
+      injectSteps: { systemMessage: { systemMessage: string } }[];
+    };
+    expect(piJson3.injectSteps[0]?.systemMessage.systemMessage).toContain(
+      "<workflow-state>",
+    );
+
+    // 3. PreToolUse(run_command) writes shell ticket and emits {} without decision=allow
     const shellOut = execFileSync(
       PYTHON_CMD,
       [path.join(hooksDir, "inject-shell-session-context.py")],
@@ -166,7 +193,7 @@ describe("Antigravity 2.0 & CLI integration", () => {
         encoding: "utf-8",
       },
     );
-    expect(shellOut.trim()).toBe("");
+    expect(JSON.parse(shellOut)).toEqual({});
     const ticketsDir = path.join(
       tmpDir,
       ".trellis",
@@ -232,5 +259,69 @@ describe("Antigravity 2.0 & CLI integration", () => {
     expect(subJson.decision).toBe("allow");
     expect(subJson.overwrite.Prompt).toContain("<!-- trellis-hook-injected -->");
     expect(subJson.overwrite.Prompt).toContain("Build demo.");
+
+    // 5. Non-Trellis built-in subagents return valid {} without decision override
+    const builtinSubOut = execFileSync(
+      PYTHON_CMD,
+      [path.join(hooksDir, "inject-subagent-context.py")],
+      {
+        cwd: path.join(tmpDir, ".agents"),
+        input: JSON.stringify({
+          conversationId: convId,
+          workspacePaths: [tmpDir],
+          cwd: tmpDir,
+          hookEventName: "PreToolUse",
+          toolCall: {
+            id: "tc-3",
+            name: "invoke_subagent",
+            args: {
+              TypeName: "research",
+              Role: "Codebase Researcher",
+              Prompt: "Search files",
+            },
+          },
+        }),
+        encoding: "utf-8",
+      },
+    );
+    expect(JSON.parse(builtinSubOut)).toEqual({});
+  });
+
+  it("merges existing .agents/hooks.json on configurePlatform without clobbering user hooks or disabled flags", async () => {
+    const hooksPath = path.join(tmpDir, ".agents", "hooks.json");
+    fs.mkdirSync(path.dirname(hooksPath), { recursive: true });
+    fs.writeFileSync(
+      hooksPath,
+      JSON.stringify(
+        {
+          "user-custom-lint": {
+            enabled: true,
+            PostToolUse: [
+              {
+                matcher: "run_command",
+                hooks: [{ type: "command", command: "./scripts/lint.sh" }],
+              },
+            ],
+          },
+          "trellis-workflow-state": {
+            enabled: false,
+            PreInvocation: [],
+          },
+        },
+        null,
+        2,
+      ),
+    );
+
+    await configurePlatform("antigravity", tmpDir);
+
+    const merged = JSON.parse(fs.readFileSync(hooksPath, "utf-8")) as Record<
+      string,
+      { enabled?: boolean }
+    >;
+    expect(merged["user-custom-lint"]).toBeDefined();
+    expect(merged["trellis-workflow-state"]?.enabled).toBe(false);
+    expect(merged["trellis-session-start"]?.enabled).toBe(true);
+    expect(merged["trellis-subagent-context"]?.enabled).toBe(true);
   });
 });

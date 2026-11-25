@@ -311,38 +311,57 @@ def _load_hook_input() -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def _is_antigravity_payload(hook_input: dict[str, Any]) -> bool:
+    return (
+        isinstance(hook_input.get("workspacePaths"), list)
+        or isinstance(hook_input.get("artifactDirectoryPath"), str)
+        or isinstance(hook_input.get("toolCall"), dict)
+    )
+
+
+def _exit_noop(is_antigravity: bool) -> int:
+    if is_antigravity:
+        print("{}")
+    return 0
+
+
 def main() -> int:
     """Write a shell-session identity ticket for pending task.py commands."""
     if os.environ.get("TRELLIS_HOOKS") == "0" or os.environ.get("TRELLIS_DISABLE_HOOKS") == "1":
         return 0
 
     hook_input = _load_hook_input()
+    is_antigravity = _is_antigravity_payload(hook_input)
 
     command, response = _pending_shell_command(hook_input)
     subcommands = _extract_task_subcommands(command)
     if not subcommands:
-        return 0
+        return _exit_noop(is_antigravity)
 
     root = _resolve_trellis_root(hook_input)
     if root is None:
-        return 0
+        return _exit_noop(is_antigravity)
 
     if not _has_context_identity(hook_input):
-        return 0
+        return _exit_noop(is_antigravity)
 
     platform_name = _host_platform_name(hook_input)
     resolve_context_key = _load_active_task_resolver(root)
     context_key = resolve_context_key(hook_input, platform=platform_name)
     if not context_key:
-        return 0
+        return _exit_noop(is_antigravity)
 
     try:
         _write_ticket(root, hook_input, context_key, command, platform_name, subcommands)
     except OSError:
-        return 0
+        return _exit_noop(is_antigravity)
 
     if response is not None:
         print(json.dumps(response, ensure_ascii=False))
+    elif is_antigravity:
+        # Antigravity hooks expect valid JSON on stdout; `{}` omits `decision`
+        # so the host's normal command approval/sandbox policy remains intact.
+        print("{}")
     return 0
 
 

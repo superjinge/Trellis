@@ -1564,6 +1564,7 @@ function runPi(
     let aborted = false;
     let timedOut = false;
     let agentEnded = false;
+    let forcedPostEnd = false;
     let exitCodeSeen: number | null = null;
     let killTimer: ReturnType<typeof setTimeout> | null = null;
     let forceCloseTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1647,13 +1648,17 @@ function runPi(
       }
       if (timedOut) {
         state.status = "failed";
+        const timeoutLabel =
+          overallTimeoutMs < 1000
+            ? `${overallTimeoutMs}ms`
+            : `${Math.round(overallTimeoutMs / 1000)}s`;
         state.errorMessage =
           state.errorMessage ||
-          `Pi subagent timed out after ${Math.round(overallTimeoutMs / 1000)}s.`;
+          `Pi subagent timed out after ${timeoutLabel}.`;
         done({ output: finalize(state, state.errorMessage), failed: true });
         return;
       }
-      if (code === 0 || (code === null && agentEnded)) {
+      if (code === 0 || ((code === null || forcedPostEnd) && agentEnded)) {
         if (
           state.status === "failed" ||
           state.status === "cancelled" ||
@@ -1724,6 +1729,7 @@ function runPi(
       const evt = parseJsonEvent(line);
       if (evt?.type === "agent_start") {
         agentEnded = false;
+        forcedPostEnd = false;
         if (postEndTimer && cancelTimeout) {
           cancelTimeout(postEndTimer);
           postEndTimer = null;
@@ -1736,6 +1742,7 @@ function runPi(
           postEndTimer = scheduleTimeout(() => {
             postEndTimer = null;
             if (settled || !agentEnded) return;
+            forcedPostEnd = true;
             terminateChild(() => settleFromObservedState(exitCodeSeen));
           }, postEndGraceMs);
           postEndTimer?.unref?.();
