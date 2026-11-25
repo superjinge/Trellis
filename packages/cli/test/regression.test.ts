@@ -1688,7 +1688,7 @@ describe("regression: JSON read/write failure reporting", () => {
       // needs no directory permission) and truncated it before writing.
       fs.chmodSync(sessionsDir, 0o555);
       try {
-        const r = runTask(["start", `${datePrefix}-two`], env);
+        const r = runTask(["start", `${datePrefix}-two`, "--switch"], env);
         expect(r.status).not.toBe(0);
         expect(r.stdout + r.stderr).toContain("Failed to set current task");
       } finally {
