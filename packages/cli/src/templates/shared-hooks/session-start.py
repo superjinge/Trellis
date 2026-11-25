@@ -162,6 +162,7 @@ def should_skip_injection() -> bool:
         return True
     non_interactive_vars = [
         "CLAUDE_NON_INTERACTIVE",
+        "ANTIGRAVITY_NON_INTERACTIVE",
         "QODER_NON_INTERACTIVE",
         "CODEBUDDY_NON_INTERACTIVE",
         "FACTORY_NON_INTERACTIVE",
@@ -217,9 +218,20 @@ def _format_git_state(repo_root: Path) -> str:
     return f"Git: branch {branch}; {dirty_text}."
 
 
+def _is_antigravity_payload(input_data: dict) -> bool:
+    return (
+        isinstance(input_data.get("workspacePaths"), list)
+        or isinstance(input_data.get("artifactDirectoryPath"), str)
+        or isinstance(input_data.get("toolCall"), dict)
+        or input_data.get("hookEventName") in ("PreInvocation", "PostInvocation")
+    )
+
+
 def _detect_platform(input_data: dict) -> str | None:
     if isinstance(input_data.get("cursor_version"), str):
         return "cursor"
+    if _is_antigravity_payload(input_data):
+        return "antigravity"
     # CLAUDE_PROJECT_DIR is a compatibility alias that several hosts set
     # alongside their own variable — CodeBuddy, ZCode and Trae all do. It must
     # therefore be checked LAST, or every one of them is detected as claude and
@@ -229,6 +241,7 @@ def _detect_platform(input_data: dict) -> str | None:
     # Observed on CodeBuddy IDE 4.10.4: session file `codebuddy_ae54840e….json`
     # alongside marker `update-check-claude_ae54840e….marker`, same id.
     env_map = {
+        "ANTIGRAVITY_PROJECT_DIR": "antigravity",
         "ZCODE_PROJECT_DIR": "zcode",
         "CURSOR_PROJECT_DIR": "cursor",
         "CODEBUDDY_PROJECT_DIR": "codebuddy",
@@ -245,6 +258,8 @@ def _detect_platform(input_data: dict) -> str | None:
         if os.environ.get(env_name):
             return platform
     script_parts = set(Path(sys.argv[0]).parts)
+    if ".agents" in script_parts or ".agent" in script_parts:
+        return "antigravity"
     if ".claude" in script_parts:
         return "claude"
     if ".cursor" in script_parts:
@@ -864,8 +879,9 @@ def main():
 
     hook_input = _load_hook_input()
 
-    # Try platform-specific env vars, hook cwd, fallback to cwd
+    # Try platform-specific env vars, hook cwd, workspacePaths, fallback to cwd
     project_dir_env_vars = [
+        "ANTIGRAVITY_PROJECT_DIR",
         "CLAUDE_PROJECT_DIR",
         "QODER_PROJECT_DIR",
         "CODEBUDDY_PROJECT_DIR",
@@ -884,7 +900,21 @@ def main():
             project_dir = Path(_normalize_windows_shell_path(val)).resolve()
             break
     if project_dir is None:
-        project_dir = Path(_normalize_windows_shell_path(hook_input.get("cwd", "."))).resolve()
+        raw_cwd = hook_input.get("cwd")
+        if not raw_cwd:
+            ws_paths = hook_input.get("workspacePaths")
+            if isinstance(ws_paths, list) and ws_paths and isinstance(ws_paths[0], str):
+                raw_cwd = ws_paths[0]
+        candidate = Path(_normalize_windows_shell_path(raw_cwd or ".")).resolve()
+        # Walk up to nearest .trellis/ so hooks invoked from `.agents/` or subdirectories still find the workspace.
+        cur = candidate
+        while cur != cur.parent:
+            if (cur / ".trellis").is_dir():
+                project_dir = cur
+                break
+            cur = cur.parent
+        if project_dir is None:
+            project_dir = candidate
 
     trellis_dir = project_dir / ".trellis"
     context_key = _resolve_context_key(trellis_dir, hook_input)
@@ -959,6 +989,24 @@ Context loaded. Follow <task-status>. Load workflow/spec/task details only when 
         return
 
     platform = _detect_platform(hook_input)
+    if platform == "antigravity":
+        print(
+            json.dumps(
+                {
+                    "injectSteps": [
+                        {
+                            "systemMessage": {
+                                "systemMessage": context_text,
+                            }
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            ),
+            flush=True,
+        )
+        return
+
     result: dict[str, object] = {
         # Claude Code / Qoder / CodeBuddy / Droid / Gemini / Copilot / Trae /
         # ZCode format.

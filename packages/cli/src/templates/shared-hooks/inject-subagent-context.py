@@ -93,11 +93,22 @@ def find_repo_root(start_path: str) -> str | None:
     return None
 
 
+def _is_antigravity_payload(input_data: dict) -> bool:
+    return (
+        isinstance(input_data.get("workspacePaths"), list)
+        or isinstance(input_data.get("artifactDirectoryPath"), str)
+        or isinstance(input_data.get("toolCall"), dict)
+        or input_data.get("hookEventName") in ("PreInvocation", "PostInvocation")
+    )
+
+
 def _detect_platform(input_data: dict) -> str | None:
     if _hook_event_name(input_data) == "SubagentStart":
         return "codex"
     if isinstance(input_data.get("cursor_version"), str):
         return "cursor"
+    if _is_antigravity_payload(input_data):
+        return "antigravity"
     # CLAUDE_PROJECT_DIR is a compatibility alias that several hosts set
     # alongside their own variable — CodeBuddy, ZCode and Trae all do. It must
     # therefore be checked LAST, or every one of them is detected as claude and
@@ -107,6 +118,7 @@ def _detect_platform(input_data: dict) -> str | None:
     # disk. Same fix as inject-workflow-state.py and session-start.py; this
     # third copy was missed when those two were corrected.
     env_map = {
+        "ANTIGRAVITY_PROJECT_DIR": "antigravity",
         "ZCODE_PROJECT_DIR": "zcode",
         "CURSOR_PROJECT_DIR": "cursor",
         "CODEBUDDY_PROJECT_DIR": "codebuddy",
@@ -123,6 +135,8 @@ def _detect_platform(input_data: dict) -> str | None:
         if os.environ.get(env_name):
             return platform
     script_parts = set(Path(sys.argv[0]).parts)
+    if ".agents" in script_parts or ".agent" in script_parts:
+        return "antigravity"
     if ".claude" in script_parts:
         return "claude"
     if ".cursor" in script_parts:
@@ -854,13 +868,13 @@ You are a documenter, not a reviewer.
 
 ## Strict Boundaries
 
-**Only allowed**: Describe what exists, where it is, how it works
+**Only allowed**: Describe what exists, where it is, how it works, and persist research findings under `{{TASK_DIR}}/research/*.md` when an active task exists.
 
 **Forbidden** (unless explicitly asked):
 - Suggest improvements
 - Criticize implementation
 - Recommend refactoring
-- Modify any files
+- Modify source code, specs, scripts, or any files outside `{{TASK_DIR}}/research/`
 
 ## Report Format
 
@@ -1062,6 +1076,18 @@ def _parse_hook_input(input_data: dict) -> tuple[str, str, dict]:
     - Gemini CLI: tool_name IS the agent name (BeforeTool matcher already filtered)
     - Kiro: agentSpawn hook, agent_name field at top level
     """
+    # Antigravity (2.0 / IDE / CLI): PreToolUse payload uses toolCall.{name,args}
+    tool_call = input_data.get("toolCall")
+    if isinstance(tool_call, dict):
+        tc_name = _string_value(tool_call.get("name"))
+        tc_args = tool_call.get("args")
+        if tc_name == "invoke_subagent" and isinstance(tc_args, dict):
+            return (
+                _string_value(tc_args.get("TypeName")),
+                str(tc_args.get("Prompt", "")),
+                tc_args,
+            )
+
     tool_input = input_data.get("tool_input", {})
     if not isinstance(tool_input, dict):
         tool_input = input_data.get("toolInput", {})
@@ -1150,7 +1176,12 @@ def main():
         sys.exit(0)
 
     subagent_type, original_prompt, tool_input = _parse_hook_input(input_data)
-    cwd = input_data.get("cwd", os.getcwd())
+    cwd = input_data.get("cwd")
+    if not cwd:
+        ws_paths = input_data.get("workspacePaths")
+        if isinstance(ws_paths, list) and ws_paths and isinstance(ws_paths[0], str):
+            cwd = ws_paths[0]
+    cwd = cwd or os.getcwd()
 
     # Only handle subagent types we care about
     if subagent_type not in AGENTS_ALL:
@@ -1221,11 +1252,22 @@ def main():
     if not context:
         sys.exit(0)
 
+    platform = _detect_platform(input_data)
+    if platform == "antigravity":
+        output = {
+            "decision": "allow",
+            "overwrite": {
+                "Prompt": new_prompt,
+            },
+        }
+        print(json.dumps(output, ensure_ascii=False))
+        sys.exit(0)
+
     # Return updated input. Most platforms ignore unrecognized fields, so we
     # include multiple formats. ZCode is stricter; live probing confirmed the
     # nested Claude-compatible shape below reaches the sub-agent prompt.
     updated = {**tool_input, "prompt": new_prompt}
-    if _detect_platform(input_data) == "zcode":
+    if platform == "zcode":
         output = {
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",

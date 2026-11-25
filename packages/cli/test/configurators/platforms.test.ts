@@ -647,24 +647,47 @@ describe("configurePlatform", () => {
     expect(fs.existsSync(path.join(tmpDir, ".agent", "workflows"))).toBe(true);
   });
 
-  it("configurePlatform('antigravity') writes all workflow templates from common source", async () => {
+  it("configurePlatform('antigravity') writes workflows, shared skills, agents, and hooks", async () => {
     await configurePlatform("antigravity", tmpDir);
 
-    const expected = resolveCommands(AI_TOOLS.antigravity.templateContext);
     const workflowsRoot = path.join(tmpDir, ".agent", "workflows");
+    expect(fs.existsSync(workflowsRoot)).toBe(true);
     const actualNames = fs
       .readdirSync(workflowsRoot, { withFileTypes: true })
       .filter((entry) => entry.isFile())
       .map((entry) => entry.name.replace(/\.md$/, ""))
       .sort();
 
-    expect(actualNames).toEqual(expected.map((c) => c.name).sort());
+    // Includes manual `/start` fallback even with hasHooks: true
+    expect(actualNames).toContain("start");
+    expect(actualNames).toContain("finish-work");
 
-    for (const cmd of expected) {
-      const workflowPath = path.join(workflowsRoot, `${cmd.name}.md`);
-      expect(fs.existsSync(workflowPath)).toBe(true);
-      expect(fs.readFileSync(workflowPath, "utf-8")).toBe(cmd.content);
-    }
+    // Shared skills under .agents/skills (deduped with Pi/Codex/Gemini)
+    expect(fs.existsSync(path.join(tmpDir, ".agents", "skills"))).toBe(true);
+    // Custom subagents under .agents/agents
+    expect(
+      fs.existsSync(
+        path.join(tmpDir, ".agents", "agents", "trellis-implement.md"),
+      ),
+    ).toBe(true);
+    expect(
+      fs.existsSync(path.join(tmpDir, ".agents", "agents", "trellis-check.md")),
+    ).toBe(true);
+    expect(
+      fs.existsSync(
+        path.join(tmpDir, ".agents", "agents", "trellis-research.md"),
+      ),
+    ).toBe(true);
+    // Hooks enabled by default and toggleable per hook
+    const hooksJsonPath = path.join(tmpDir, ".agents", "hooks.json");
+    expect(fs.existsSync(hooksJsonPath)).toBe(true);
+    const hooksConfig = JSON.parse(
+      fs.readFileSync(hooksJsonPath, "utf-8"),
+    ) as Record<string, { enabled?: boolean }>;
+    expect(hooksConfig["trellis-session-start"]?.enabled).toBe(true);
+    expect(hooksConfig["trellis-workflow-state"]?.enabled).toBe(true);
+    expect(hooksConfig["trellis-subagent-context"]?.enabled).toBe(true);
+    expect(hooksConfig["trellis-shell-session-context"]?.enabled).toBe(true);
   });
 
   it("configurePlatform('devin') creates .devin/workflows directory", async () => {

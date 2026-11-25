@@ -40,6 +40,7 @@ _CONVERSATION_KEYS = ("conversation_id", "conversationId", "conversationID")
 _TRANSCRIPT_KEYS = ("transcript_path", "transcriptPath", "transcript")
 _NESTED_KEYS = ("input", "properties", "event", "hook_input", "hookInput")
 _KNOWN_PLATFORMS = {
+    "antigravity",
     "claude",
     "codex",
     "cursor",
@@ -152,6 +153,8 @@ _ENV_PLATFORM_ALIASES = {
 # is ZCode, while later shell commands see only the shared env name and resolve
 # it through the claude entry. Canonicalize both paths to one runtime filename.
 _CONTEXT_KEY_PLATFORM_ALIASES = {
+    "agents": "antigravity",
+    "agent": "antigravity",
     "zcode": "claude",
     # Factory Droid's config directory is `.factory/`, so a hook that names its
     # platform after the directory it was installed in reports "factory". Its

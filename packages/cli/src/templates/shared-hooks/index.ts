@@ -31,6 +31,7 @@ export type SharedHookName =
   | "inject-subagent-context.py";
 
 export type SharedHookPlatform =
+  | "antigravity"
   | "claude"
   | "cursor"
   | "codex"
@@ -96,6 +97,12 @@ export const SHARED_HOOKS_BY_PLATFORM: Record<
   SharedHookPlatform,
   readonly SharedHookName[]
 > = {
+  antigravity: [
+    "session-start.py",
+    "inject-shell-session-context.py",
+    "inject-workflow-state.py",
+    "inject-subagent-context.py",
+  ],
   claude: [
     "session-start.py",
     "inject-workflow-state.py",

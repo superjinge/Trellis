@@ -1,0 +1,52 @@
+{
+  "trellis-session-start": {
+    "enabled": true,
+    "SessionStart": [
+      {
+        "type": "command",
+        "command": "{{PYTHON_CMD}} ./hooks/session-start.py",
+        "timeout": 30
+      }
+    ]
+  },
+  "trellis-workflow-state": {
+    "enabled": true,
+    "PreInvocation": [
+      {
+        "type": "command",
+        "command": "{{PYTHON_CMD}} ./hooks/inject-workflow-state.py",
+        "timeout": 15
+      }
+    ]
+  },
+  "trellis-subagent-context": {
+    "enabled": true,
+    "PreToolUse": [
+      {
+        "matcher": "invoke_subagent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "{{PYTHON_CMD}} ./hooks/inject-subagent-context.py",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  },
+  "trellis-shell-session-context": {
+    "enabled": true,
+    "PreToolUse": [
+      {
+        "matcher": "run_command",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "{{PYTHON_CMD}} ./hooks/inject-shell-session-context.py",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

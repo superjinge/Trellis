@@ -98,9 +98,20 @@ def find_trellis_root(start: Path) -> Optional[Path]:
 # Active task discovery
 # ---------------------------------------------------------------------------
 
+def _is_antigravity_payload(input_data: dict) -> bool:
+    return (
+        isinstance(input_data.get("workspacePaths"), list)
+        or isinstance(input_data.get("artifactDirectoryPath"), str)
+        or isinstance(input_data.get("toolCall"), dict)
+        or input_data.get("hookEventName") in ("PreInvocation", "PostInvocation")
+    )
+
+
 def _detect_platform(input_data: dict) -> str | None:
     if isinstance(input_data.get("cursor_version"), str):
         return "cursor"
+    if _is_antigravity_payload(input_data):
+        return "antigravity"
     # CLAUDE_PROJECT_DIR is a compatibility alias that several hosts set
     # alongside their own variable — CodeBuddy, ZCode and Trae all do. It must
     # therefore be checked LAST, or every one of them is detected as claude and
@@ -110,6 +121,7 @@ def _detect_platform(input_data: dict) -> str | None:
     # Observed on CodeBuddy IDE 4.10.4: session file `codebuddy_ae54840e….json`
     # alongside marker `update-check-claude_ae54840e….marker`, same id.
     env_map = {
+        "ANTIGRAVITY_PROJECT_DIR": "antigravity",
         "ZCODE_PROJECT_DIR": "zcode",
         "CURSOR_PROJECT_DIR": "cursor",
         "CODEBUDDY_PROJECT_DIR": "codebuddy",
@@ -126,6 +138,8 @@ def _detect_platform(input_data: dict) -> str | None:
         if os.environ.get(env_name):
             return platform
     script_parts = set(Path(sys.argv[0]).parts)
+    if ".agents" in script_parts or ".agent" in script_parts:
+        return "antigravity"
     if ".claude" in script_parts:
         return "claude"
     if ".cursor" in script_parts:
@@ -422,20 +436,38 @@ def main() -> int:
         return 0
 
     data = _load_hook_input()
+    platform = _detect_platform(data)
 
-    cwd_str = data.get("cwd") or os.getcwd()
-    cwd = Path(cwd_str)
+    # Antigravity fires PreInvocation on every model step inside a single turn
+    # (invocationNum = 1, 2, 3...). Inject only on the first model call of the
+    # turn so tool-call loops do not repeatedly duplicate <workflow-state>.
+    if platform == "antigravity":
+        inv_num = data.get("invocationNum")
+        if isinstance(inv_num, int) and inv_num > 1:
+            print("{}")
+            return 0
+
+    cwd_str = data.get("cwd")
+    if not cwd_str:
+        ws_paths = data.get("workspacePaths")
+        if isinstance(ws_paths, list) and ws_paths and isinstance(ws_paths[0], str):
+            cwd_str = ws_paths[0]
+    cwd = Path(cwd_str or os.getcwd())
 
     root = find_trellis_root(cwd)
     if root is None:
+        if platform == "antigravity":
+            print("{}")
         return 0  # not a Trellis project
 
     config = _read_trellis_config(root)
-    if prompt_has_skip_keyword(data.get("prompt", ""), _resolve_skip_keyword(config)):
+    prompt_text = data.get("prompt") or data.get("lastUserInput") or ""
+    if prompt_has_skip_keyword(prompt_text, _resolve_skip_keyword(config)):
+        if platform == "antigravity":
+            print("{}")
         return 0  # user opted out of the per-turn breadcrumb for this turn
 
     templates = load_breadcrumbs(root)
-    platform = _detect_platform(data)
     task = get_active_task(root, data)
     if task is None:
         # No active task — still emit a breadcrumb nudging AI toward
@@ -465,6 +497,23 @@ def main() -> int:
     # hookSpecificOutput JSON path below unchanged.
     if platform == "kiro":
         print(breadcrumb)
+        return 0
+
+    if platform == "antigravity":
+        print(
+            json.dumps(
+                {
+                    "injectSteps": [
+                        {
+                            "systemMessage": {
+                                "systemMessage": breadcrumb,
+                            }
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            )
+        )
         return 0
 
     # Gemini CLI 0.40.x rejects "UserPromptSubmit" — its per-turn event is

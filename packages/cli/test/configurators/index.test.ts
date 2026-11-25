@@ -320,7 +320,9 @@ describe("collectPlatformTemplates", () => {
     // Trellis writes there (shared with Codex) so a single skill set serves
     // both platforms — eliminates duplicate-skill warnings (issue #224).
     gemini: ".agents/skills",
-    antigravity: ".agent/skills",
+    // Antigravity 2.0 / CLI discovers `.agents/skills/` natively; sharing it
+    // with Pi/Codex/Gemini avoids duplicate skill discovery.
+    antigravity: ".agents/skills",
     devin: ".devin/skills",
     qoder: ".qoder/skills",
     codebuddy: ".codebuddy/skills",

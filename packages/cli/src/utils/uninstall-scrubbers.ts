@@ -448,6 +448,95 @@ export function scrubCodexConfigToml(content: string): ScrubResult {
   return { content: result, fullyEmpty };
 }
 
+export function scrubNamedHooksJson(
+  content: string,
+  deletedPaths: readonly string[],
+): ScrubResult {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    return { content, fullyEmpty: false };
+  }
+
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return { content, fullyEmpty: false };
+  }
+
+  const root = parsed as Record<string, unknown>;
+  const matchesDeleted = (cmd: string): boolean => {
+    if (commandMatchesDeletedPath(cmd, deletedPaths)) return true;
+    const tokens = cmd.trim().split(/\s+/);
+    const lastToken = tokens[tokens.length - 1]?.replace(/^["']|["']$/g, "") ?? "";
+    if (!lastToken) return false;
+    const normalized = lastToken.replace(/^\.\//, "");
+    return deletedPaths.some(
+      (p) => p === `.agents/${normalized}` || p === `.agent/${normalized}`,
+    );
+  };
+
+  const keptRoot: Record<string, unknown> = {};
+  for (const [hookName, spec] of Object.entries(root)) {
+    if (spec === null || typeof spec !== "object" || Array.isArray(spec)) {
+      keptRoot[hookName] = spec;
+      continue;
+    }
+    const specObj = spec as Record<string, unknown>;
+    let touched = false;
+    const keptSpec: Record<string, unknown> = {};
+    for (const [eventKey, entries] of Object.entries(specObj)) {
+      if (eventKey === "enabled" || !Array.isArray(entries)) {
+        keptSpec[eventKey] = entries;
+        continue;
+      }
+
+      const filtered: unknown[] = [];
+      for (const entry of entries) {
+        if (entry === null || typeof entry !== "object") {
+          filtered.push(entry);
+          continue;
+        }
+        const entryObj = entry as Record<string, unknown>;
+        if (Array.isArray(entryObj.hooks)) {
+          const keptInner = entryObj.hooks.filter((h) => {
+            const cmd = getEntryCommand(h);
+            if (cmd !== null && matchesDeleted(cmd)) {
+              touched = true;
+              return false;
+            }
+            return true;
+          });
+          if (keptInner.length > 0) {
+            filtered.push({ ...entryObj, hooks: keptInner });
+          }
+        } else {
+          const cmd = getEntryCommand(entryObj);
+          if (cmd !== null && matchesDeleted(cmd)) {
+            touched = true;
+            continue;
+          }
+          filtered.push(entry);
+        }
+      }
+
+      if (filtered.length > 0) {
+        keptSpec[eventKey] = filtered;
+      }
+    }
+
+    const remainingKeys = Object.keys(keptSpec).filter((k) => k !== "enabled");
+    if (!touched || remainingKeys.length > 0) {
+      keptRoot[hookName] = keptSpec;
+    }
+  }
+
+  const fullyEmpty = Object.keys(keptRoot).length === 0;
+  return {
+    content: JSON.stringify(keptRoot, null, 2) + "\n",
+    fullyEmpty,
+  };
+}
+
 export function scrubManagedMarkdownBlock(
   content: string,
   startMarker: string,

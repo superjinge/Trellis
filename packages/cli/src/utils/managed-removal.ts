@@ -20,6 +20,7 @@ import {
   scrubCodexConfigToml,
   scrubHooksJson,
   scrubManagedMarkdownBlock,
+  scrubNamedHooksJson,
   scrubOpencodePackageJson,
   scrubPiSettings,
   type ScrubResult,
@@ -189,6 +190,12 @@ export function buildStructuredFileSpecs(): Map<string, StructuredFileSpec> {
           scrubHooksJson(content, deletedPaths, "flat"),
       }),
     ),
+    {
+      posixPath: ".agents/hooks.json",
+      reason: "Strip trellis hooks; preserve user hooks",
+      scrub: (content, deletedPaths) =>
+        scrubNamedHooksJson(content, deletedPaths),
+    },
     {
       posixPath: ".opencode/package.json",
       reason: "Remove @opencode-ai/plugin dep; preserve other deps",

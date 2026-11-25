@@ -86,6 +86,11 @@ def _resolve_trellis_root(hook_input: dict[str, Any]) -> Path | None:
     payload_cwd = _string_value(hook_input.get("cwd"))
     if payload_cwd:
         candidates.append(Path(payload_cwd))
+    ws_paths = hook_input.get("workspacePaths")
+    if isinstance(ws_paths, list) and ws_paths:
+        first_ws = _string_value(ws_paths[0])
+        if first_ws:
+            candidates.append(Path(first_ws))
     try:
         candidates.append(Path(os.getcwd()))
     except OSError:
@@ -129,6 +134,16 @@ def _pending_shell_command(hook_input: dict[str, Any]) -> tuple[str, dict[str, A
     if command:
         return command, SHELL_EVENT_RESPONSE
 
+    tool_call = hook_input.get("toolCall")
+    if isinstance(tool_call, dict):
+        tc_args = tool_call.get("args")
+        if isinstance(tc_args, dict):
+            command = _string_value(tc_args.get("CommandLine") or tc_args.get("command"))
+            if command:
+                # Never emit decision="allow" for Antigravity run_command —
+                # that would bypass user sandbox/approval policies.
+                return command, None
+
     for key in TOOL_INPUT_KEYS:
         tool_input = hook_input.get(key)
         if not isinstance(tool_input, dict):
@@ -140,7 +155,7 @@ def _pending_shell_command(hook_input: dict[str, Any]) -> tuple[str, dict[str, A
     return "", None
 
 
-def _host_platform_name() -> str | None:
+def _host_platform_name(hook_input: dict[str, Any] | None = None) -> str | None:
     """Name the host from the config directory this hook was installed into.
 
     Every platform puts its hooks under its own dotted directory
@@ -150,9 +165,18 @@ def _host_platform_name() -> str | None:
     other hooks compute — a ticket keyed differently would write a session
     file no later hook ever reads.
     """
+    if isinstance(hook_input, dict) and (
+        isinstance(hook_input.get("workspacePaths"), list)
+        or isinstance(hook_input.get("artifactDirectoryPath"), str)
+        or isinstance(hook_input.get("toolCall"), dict)
+    ):
+        return "antigravity"
     for part in reversed(Path(sys.argv[0]).parts):
         if part.startswith(".") and part not in (".", "..") and len(part) > 1:
-            return part[1:]
+            name = part[1:]
+            if name in ("agents", "agent"):
+                return "antigravity"
+            return name
     return None
 
 
@@ -306,7 +330,7 @@ def main() -> int:
     if not _has_context_identity(hook_input):
         return 0
 
-    platform_name = _host_platform_name()
+    platform_name = _host_platform_name(hook_input)
     resolve_context_key = _load_active_task_resolver(root)
     context_key = resolve_context_key(hook_input, platform=platform_name)
     if not context_key:
