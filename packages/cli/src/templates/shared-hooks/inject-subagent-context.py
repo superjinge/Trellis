@@ -1211,7 +1211,9 @@ def main():
 
     def _exit_noop() -> NoReturn:
         if _detect_platform(input_data) == "antigravity":
-            print("{}")
+            # Antigravity 1.4.1+ / 2.0 treats `{}` on PreToolUse as a
+            # fail-closed deny; `"ask"` defers to the host's normal policy.
+            print('{"decision": "ask"}')
         sys.exit(0)
 
     subagent_type, original_prompt, tool_input = _parse_hook_input(input_data)

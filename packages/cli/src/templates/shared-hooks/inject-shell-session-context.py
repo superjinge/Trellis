@@ -321,7 +321,10 @@ def _is_antigravity_payload(hook_input: dict[str, Any]) -> bool:
 
 def _exit_noop(is_antigravity: bool) -> int:
     if is_antigravity:
-        print("{}")
+        # Antigravity 1.4.1+ / 2.0 treats `{}` on PreToolUse as a fail-closed
+        # deny with an empty reason; emit explicit `decision: "ask"` so the
+        # host's normal approval/sandbox policy applies without weakening it.
+        print('{"decision": "ask"}')
     return 0
 
 
@@ -359,9 +362,10 @@ def main() -> int:
     if response is not None:
         print(json.dumps(response, ensure_ascii=False))
     elif is_antigravity:
-        # Antigravity hooks expect valid JSON on stdout; `{}` omits `decision`
-        # so the host's normal command approval/sandbox policy remains intact.
-        print("{}")
+        # Antigravity PreToolUse requires an explicit `decision`; `{}` is
+        # treated as a fail-closed deny on 1.4.1+ / 2.0. `"ask"` preserves the
+        # host's normal command approval/sandbox policy.
+        print('{"decision": "ask"}')
     return 0
 
 

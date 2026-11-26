@@ -171,7 +171,9 @@ describe("Antigravity 2.0 & CLI integration", () => {
       "<workflow-state>",
     );
 
-    // 3. PreToolUse(run_command) writes shell ticket and emits {} without decision=allow
+    // 3. PreToolUse(run_command) writes shell ticket and emits decision=ask
+    // (never `{}`, which agy 1.4.1+ / 2.0 denies fail-closed, and never `allow`,
+    // which bypasses Desktop App command approval).
     const shellOut = execFileSync(
       PYTHON_CMD,
       [path.join(hooksDir, "inject-shell-session-context.py")],
@@ -193,7 +195,31 @@ describe("Antigravity 2.0 & CLI integration", () => {
         encoding: "utf-8",
       },
     );
-    expect(JSON.parse(shellOut)).toEqual({});
+    expect(JSON.parse(shellOut)).toEqual({ decision: "ask" });
+
+    // Non-task.py run_command also emits decision=ask (never `{}`)
+    const shellNoopOut = execFileSync(
+      PYTHON_CMD,
+      [path.join(hooksDir, "inject-shell-session-context.py")],
+      {
+        cwd: path.join(tmpDir, ".agents"),
+        input: JSON.stringify({
+          conversationId: convId,
+          workspacePaths: [tmpDir],
+          cwd: tmpDir,
+          hookEventName: "PreToolUse",
+          toolCall: {
+            id: "tc-1b",
+            name: "run_command",
+            args: {
+              CommandLine: "git status",
+            },
+          },
+        }),
+        encoding: "utf-8",
+      },
+    );
+    expect(JSON.parse(shellNoopOut)).toEqual({ decision: "ask" });
     const ticketsDir = path.join(
       tmpDir,
       ".trellis",
@@ -260,7 +286,7 @@ describe("Antigravity 2.0 & CLI integration", () => {
     expect(subJson.overwrite.Prompt).toContain("<!-- trellis-hook-injected -->");
     expect(subJson.overwrite.Prompt).toContain("Build demo.");
 
-    // 5. Non-Trellis built-in subagents return valid {} without decision override
+    // 5. Non-Trellis built-in subagents return decision=ask (never `{}`)
     const builtinSubOut = execFileSync(
       PYTHON_CMD,
       [path.join(hooksDir, "inject-subagent-context.py")],
@@ -284,7 +310,7 @@ describe("Antigravity 2.0 & CLI integration", () => {
         encoding: "utf-8",
       },
     );
-    expect(JSON.parse(builtinSubOut)).toEqual({});
+    expect(JSON.parse(builtinSubOut)).toEqual({ decision: "ask" });
   });
 
   it("merges existing .agents/hooks.json on configurePlatform without clobbering user hooks or disabled flags", async () => {
