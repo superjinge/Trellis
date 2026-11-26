@@ -52,6 +52,8 @@ function setupRepo(tmp: string): void {
   // Local commit identity so commit() works in CI without global config.
   git(tmp, "config", "user.email", "test@example.com");
   git(tmp, "config", "user.name", "Test");
+  // Prevent background `git gc --auto` from racing with `afterEach` rmSync on macOS.
+  git(tmp, "config", "gc.auto", "0");
 
   // Stamp the real templates into the test repo.
   const scriptsDest = path.join(tmp, ".trellis", "scripts");
@@ -110,7 +112,12 @@ describe.skipIf(!hasPython())(
     });
 
     afterEach(() => {
-      fs.rmSync(tmp, { recursive: true, force: true });
+      fs.rmSync(tmp, {
+        recursive: true,
+        force: true,
+        maxRetries: 5,
+        retryDelay: 50,
+      });
     });
 
     it("does not bundle dirty changes from other task dirs (scope-creep fix)", () => {
