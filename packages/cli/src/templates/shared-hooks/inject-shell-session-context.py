@@ -319,6 +319,10 @@ def _is_antigravity_payload(hook_input: dict[str, Any]) -> bool:
     )
 
 
+def _is_antigravity_script_path() -> bool:
+    return any(part in (".agents", ".agent") for part in Path(sys.argv[0]).parts)
+
+
 def _exit_noop(is_antigravity: bool) -> int:
     if is_antigravity:
         # Antigravity 1.4.1+ / 2.0 treats `{}` on PreToolUse as a fail-closed
@@ -331,7 +335,7 @@ def _exit_noop(is_antigravity: bool) -> int:
 def main() -> int:
     """Write a shell-session identity ticket for pending task.py commands."""
     if os.environ.get("TRELLIS_HOOKS") == "0" or os.environ.get("TRELLIS_DISABLE_HOOKS") == "1":
-        return 0
+        return _exit_noop(_is_antigravity_script_path())
 
     hook_input = _load_hook_input()
     is_antigravity = _is_antigravity_payload(hook_input)

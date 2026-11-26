@@ -157,6 +157,18 @@ describe("research prompt output scope (#634)", () => {
     expect(dispatch("Task")).toBe("");
   });
 
+  it("does not grant writes to a non-task in-repo directory or regular file", () => {
+    writeFile("src/index.ts", "export const x = 1;\n");
+    setTask("src");
+    expect(dispatch("Agent")).toBe("");
+
+    setTask(".trellis/tasks");
+    expect(dispatch("Agent")).toBe("");
+
+    setTask("src/index.ts");
+    expect(dispatch("Agent")).toBe("");
+  });
+
   it("keeps all shared-hook dogfood copies in sync", () => {
     const repoRoot = path.resolve(
       path.dirname(fileURLToPath(import.meta.url)),

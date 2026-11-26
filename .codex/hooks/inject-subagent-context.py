@@ -788,7 +788,9 @@ Finish checklist and requirements:
 
 
 
-def get_research_context(repo_root: str, task_dir: str | None) -> str:
+def get_research_context(
+    repo_root: str, task_dir: str | None, *, platform: str | None = None
+) -> str:
     """
     Context for Research Agent — project structure overview for spec directories.
 
@@ -815,6 +817,19 @@ def get_research_context(repo_root: str, task_dir: str | None) -> str:
 
     spec_tree = "\n".join(tree_lines)
 
+    if platform == "antigravity":
+        search_tips = (
+            f"- Spec files: `{spec_path}/**/*.md`\n"
+            "- Code search: Use `read_file` and read-only `run_command` (`git grep`, `rg`, `find`)\n"
+            "- Tech solutions: Use `search_web`"
+        )
+    else:
+        search_tips = (
+            f"- Spec files: `{spec_path}/**/*.md`\n"
+            "- Code search: Use Glob and Grep tools\n"
+            "- Tech solutions: Use mcp__exa__web_search_exa or mcp__exa__get_code_context_exa"
+        )
+
     project_structure = f"""## Project Spec Directory Structure
 
 ```
@@ -825,9 +840,7 @@ To get structured package info, run: `python3 ./{DIR_WORKFLOW}/scripts/get_conte
 
 ## Search Tips
 
-- Spec files: `{spec_path}/**/*.md`
-- Code search: Use Glob and Grep tools
-- Tech solutions: Use mcp__exa__web_search_exa or mcp__exa__get_code_context_exa"""
+{search_tips}"""
 
     context_parts.append(project_structure)
 
@@ -835,7 +848,10 @@ To get structured package info, run: `python3 ./{DIR_WORKFLOW}/scripts/get_conte
 
 
 def build_research_prompt(
-    original_prompt: str, context: str, task_dir: str | None = None
+    original_prompt: str,
+    context: str,
+    task_dir: str | None = None,
+    platform: str | None = None,
 ) -> str:
     """Build the research prompt with task-scoped output instructions."""
     if task_dir:
@@ -856,6 +872,24 @@ all files outside it and git operations remain forbidden."""
         report_delivery = """Resolve the output directory before persisting results.
 Then reply with written paths and one-line summaries, plus critical caveats,
 instead of the full research content."""
+
+    if platform == "antigravity":
+        search_tools = """| Tool | Purpose |
+|------|---------|
+| `read_file` | Read file content |
+| `write_file` | Persist topic markdown in the allowed output directory |
+| `search_web` | External web/doc search |
+| `run_command` | Read-only codebase search (`git grep`, `rg`, `find`) |"""
+    else:
+        search_tools = """| Tool | Purpose |
+|------|---------|
+| Glob | Search by filename pattern |
+| Grep | Search by content |
+| Read | Read file content |
+| Write | Persist topic markdown in the allowed output directory |
+| mcp__exa__web_search_exa | External web search |
+| mcp__exa__get_code_context_exa | External code/doc search |"""
+
     return f"""# Research Agent Task
 
 You are the Research Agent in the Multi-Agent Pipeline (search researcher).
@@ -888,14 +922,7 @@ You are a documenter, not a reviewer.
 
 ## Search Tools
 
-| Tool | Purpose |
-|------|---------|
-| Glob | Search by filename pattern |
-| Grep | Search by content |
-| Read | Read file content |
-| Write | Persist topic markdown in the allowed output directory |
-| mcp__exa__web_search_exa | External web search |
-| mcp__exa__get_code_context_exa | External code/doc search |
+{search_tools}
 
 ## Strict Boundaries
 
@@ -1191,9 +1218,15 @@ def _load_hook_input() -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def _is_antigravity_script_path() -> bool:
+    return any(part in (".agents", ".agent") for part in Path(sys.argv[0]).parts)
+
+
 def main():
     """Rewrite the spawned sub-agent prompt with Trellis task context."""
     if os.environ.get("TRELLIS_HOOKS") == "0" or os.environ.get("TRELLIS_DISABLE_HOOKS") == "1":
+        if _is_antigravity_script_path():
+            print('{"decision": "ask"}')
         sys.exit(0)
 
     input_data = _load_hook_input()
@@ -1247,26 +1280,26 @@ def main():
 
     # Research output must use the same contained task pointer as other agents.
     if task_dir:
-        # Contain the pointer before reading anything through it. `task.py` now
-        # refuses to store a ref that leaves the repo, but a session file
-        # written before that fix can still hold one, and `trellis update`
-        # does not rewrite session files — so a poisoned pointer outlives the
-        # upgrade that closed the writer. This is the last hop before the
-        # task's prd.md/design.md reach the model prompt, so it checks again.
+        # Contain the pointer strictly inside `.trellis/tasks/` before reading
+        # artifacts or granting a research write scope. `task.py` now refuses
+        # to store a ref that leaves the tasks dir, but a legacy or hand-edited
+        # session file can still point to `.`, `src/`, `.trellis/tasks`, a
+        # regular file, or a symlink outside the repo. Using `realpath` on
+        # `.trellis/tasks` also preserves #567 (when `.trellis` itself is a
+        # symlink into an external store).
         try:
-            root_real = os.path.realpath(repo_root)
-            # `.trellis` may itself be a symlink into a store outside the
-            # repo (#567); its real location is a second legitimate base.
-            workflow_real = os.path.realpath(os.path.join(repo_root, ".trellis"))
+            tasks_real = os.path.realpath(os.path.join(repo_root, DIR_WORKFLOW, "tasks"))
             task_dir_full = os.path.realpath(os.path.join(repo_root, task_dir))
-            if not _real_path_contained(root_real, task_dir_full) and not (
-                _real_path_contained(workflow_real, task_dir_full)
+            if (
+                not _real_path_contained(tasks_real, task_dir_full)
+                or task_dir_full == tasks_real
+                or not os.path.isdir(task_dir_full)
             ):
                 _exit_noop()
         except OSError:
             _exit_noop()
-        if not os.path.exists(task_dir_full):
-            _exit_noop()
+
+    platform = _detect_platform(input_data)
 
     # Check for [finish] marker in prompt (check agent with finish context)
     is_finish_phase = "[finish]" in original_prompt.lower()
@@ -1288,16 +1321,20 @@ def main():
             new_prompt = build_check_prompt(original_prompt, context)
     elif subagent_type == AGENT_RESEARCH:
         # Research can work without task directory
-        context = get_research_context(repo_root, task_dir)
-        new_prompt = build_research_prompt(original_prompt, context, task_dir)
+        context = get_research_context(repo_root, task_dir, platform=platform)
+        new_prompt = build_research_prompt(
+            original_prompt, context, task_dir, platform=platform
+        )
     else:
         _exit_noop()
 
     if not context:
         _exit_noop()
 
-    platform = _detect_platform(input_data)
     if platform == "antigravity":
+        # Intentionally emit `decision: "allow"` alongside `overwrite` for
+        # Trellis-managed subagents: auto-approves the rewritten prompt and
+        # avoids Antigravity's request-review overwrite drop (antigravity-cli#575).
         output = {
             "decision": "allow",
             "overwrite": {

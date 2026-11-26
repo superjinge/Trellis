@@ -311,6 +311,134 @@ describe("Antigravity 2.0 & CLI integration", () => {
       },
     );
     expect(JSON.parse(builtinSubOut)).toEqual({ decision: "ask" });
+
+    // 6. PreToolUse(invoke_subagent) for trellis-research:
+    //    (a) active task grants task-local research/ writes and uses Antigravity tool names
+    const researchWithTaskOut = execFileSync(
+      PYTHON_CMD,
+      [path.join(hooksDir, "inject-subagent-context.py")],
+      {
+        cwd: path.join(tmpDir, ".agents"),
+        input: JSON.stringify({
+          conversationId: convId,
+          workspacePaths: [tmpDir],
+          cwd: tmpDir,
+          hookEventName: "PreToolUse",
+          toolCall: {
+            id: "tc-4",
+            name: "invoke_subagent",
+            args: {
+              TypeName: "trellis-research",
+              Role: "Researcher",
+              Prompt: "Investigate hook contracts",
+            },
+          },
+        }),
+        encoding: "utf-8",
+      },
+    );
+    const researchWithTaskJson = JSON.parse(researchWithTaskOut) as {
+      decision: string;
+      overwrite: { Prompt: string };
+    };
+    expect(researchWithTaskJson.decision).toBe("allow");
+    expect(researchWithTaskJson.overwrite.Prompt).toContain(
+      ".trellis/tasks/11-25-demo/research/*.md",
+    );
+    expect(researchWithTaskJson.overwrite.Prompt).toContain("`write_file`");
+    expect(researchWithTaskJson.overwrite.Prompt).not.toContain("mcp__exa__");
+
+    //    (b) unmatched conversationId does NOT borrow another window's active task
+    const researchUnmatchedOut = execFileSync(
+      PYTHON_CMD,
+      [path.join(hooksDir, "inject-subagent-context.py")],
+      {
+        cwd: path.join(tmpDir, ".agents"),
+        input: JSON.stringify({
+          conversationId: "agy-conv-other-window",
+          workspacePaths: [tmpDir],
+          cwd: tmpDir,
+          hookEventName: "PreToolUse",
+          toolCall: {
+            id: "tc-5",
+            name: "invoke_subagent",
+            args: {
+              TypeName: "trellis-research",
+              Role: "Researcher",
+              Prompt: "Investigate hook contracts",
+            },
+          },
+        }),
+        encoding: "utf-8",
+      },
+    );
+    const researchUnmatchedJson = JSON.parse(researchUnmatchedOut) as {
+      decision: string;
+      overwrite: { Prompt: string };
+    };
+    expect(researchUnmatchedJson.decision).toBe("allow");
+    expect(researchUnmatchedJson.overwrite.Prompt).toContain(
+      "ask the user where to write output",
+    );
+    expect(researchUnmatchedJson.overwrite.Prompt).not.toContain(
+      ".trellis/tasks/11-25-demo/research",
+    );
+
+    //    (c) non-task in-repo directory pointer (e.g. `src`) is rejected with decision=ask
+    fs.mkdirSync(path.join(tmpDir, "src"), { recursive: true });
+    fs.writeFileSync(
+      path.join(sessionsDir, `${ticket.context_key}.json`),
+      JSON.stringify({ current_task: "src" }),
+    );
+    const researchNonTaskDirOut = execFileSync(
+      PYTHON_CMD,
+      [path.join(hooksDir, "inject-subagent-context.py")],
+      {
+        cwd: path.join(tmpDir, ".agents"),
+        input: JSON.stringify({
+          conversationId: convId,
+          workspacePaths: [tmpDir],
+          cwd: tmpDir,
+          hookEventName: "PreToolUse",
+          toolCall: {
+            id: "tc-6",
+            name: "invoke_subagent",
+            args: {
+              TypeName: "trellis-research",
+              Role: "Researcher",
+              Prompt: "Investigate hook contracts",
+            },
+          },
+        }),
+        encoding: "utf-8",
+      },
+    );
+    expect(JSON.parse(researchNonTaskDirOut)).toEqual({ decision: "ask" });
+
+    // 7. TRELLIS_HOOKS=0 early-exit still emits decision=ask on Antigravity PreToolUse
+    const disabledShellOut = execFileSync(
+      PYTHON_CMD,
+      [path.join(hooksDir, "inject-shell-session-context.py")],
+      {
+        cwd: path.join(tmpDir, ".agents"),
+        env: { ...process.env, TRELLIS_HOOKS: "0" },
+        input: "{}",
+        encoding: "utf-8",
+      },
+    );
+    expect(JSON.parse(disabledShellOut)).toEqual({ decision: "ask" });
+
+    const disabledSubOut = execFileSync(
+      PYTHON_CMD,
+      [path.join(hooksDir, "inject-subagent-context.py")],
+      {
+        cwd: path.join(tmpDir, ".agents"),
+        env: { ...process.env, TRELLIS_HOOKS: "0" },
+        input: "{}",
+        encoding: "utf-8",
+      },
+    );
+    expect(JSON.parse(disabledSubOut)).toEqual({ decision: "ask" });
   });
 
   it("merges existing .agents/hooks.json on configurePlatform without clobbering user hooks or disabled flags", async () => {
